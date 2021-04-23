@@ -1,6 +1,10 @@
 #ifndef BOMBA_JSON
 #define BOMBA_JSON
+
+#ifndef BOMBA_CORE // Needed to run in godbolt
 #include "bomba_core.hpp"
+#endif
+
 #include <array>
 #include <string_view>
 #include <charconv>
@@ -14,8 +18,8 @@ template <AssembledString StringType = std::string>
 struct BasicJson {
 	class Input : public IStructuredInput {
 		std::string_view _contents;
-		int _position = 0;
 		StringType _resultBuffer;
+		int _position = 0;
 		
 		void endOfInput() {
 			good = false;
@@ -67,7 +71,7 @@ struct BasicJson {
 		Input(std::string_view contents) : _contents(contents) {}
 		
 		
-		MemberType identifyType() final override {
+		MemberType identifyType(Flags flags) final override {
 			eatWhitespace();
 			if (_contents.begin() + _position >= _contents.end()) [[unlikely]]
 				return TYPE_INVALID;
@@ -183,7 +187,6 @@ struct BasicJson {
 			eatWhitespace();
 			if (peekChar() != ']')
 				return true;
-			getChar();
 			return false;
 		}
 		void endReadingArray(Flags flags) final override {
@@ -201,8 +204,7 @@ struct BasicJson {
 			eatWhitespace();
 			if (peekChar() != '}') {
 				return readString(flags);
-			} else
-				getChar();
+			}
 			return std::nullopt;
 		}
 		bool seekObjectElement(Flags flags, std::string_view name) final override {
@@ -259,6 +261,7 @@ struct BasicJson {
 	class Output : public IStructuredOutput {
 		StringType& _contents;
 		int _depth = 0;
+		bool _skipNewline = false;
 		
 		template <typename Num>
 		void writeValueInternal(Num value) {
@@ -269,6 +272,11 @@ struct BasicJson {
 			_contents += &bytes[0];
 		}
 		void newLine() {
+			if (_skipNewline) [[unlikely]] {
+				_skipNewline = false;
+				return;
+			}
+			
 			_contents += '\n';
 			for (int i = 0; i < _depth; i++)
 				_contents += '\t';
@@ -308,9 +316,11 @@ struct BasicJson {
 			_contents += "null";
 		}
 		
-		void startWritingArray(Flags flags) final override {
+		void startWritingArray(Flags flags, int size) final override {
 			_contents += '[';
 			_depth++;
+			if (size == 0)
+				_skipNewline = true;
 		}
 		void introduceArrayElement(Flags flags, int index) final override {
 			if (index > 0)
@@ -323,9 +333,11 @@ struct BasicJson {
 			_contents += ']';
 		}
 		
-		void startWritingObject(Flags flags) final override {
+		void startWritingObject(Flags flags, int size) final override {
 			_contents += '{';
 			_depth++;
+			if (size == 0)
+				_skipNewline = true;
 		}
 		void introduceObjectMember(Flags flags, std::string_view name, int index) final override {
 			if (index > 0)
