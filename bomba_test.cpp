@@ -2,6 +2,7 @@
 #include <iostream>
 #include "bomba_core.hpp"
 #include "bomba_json.hpp"
+#include "bomba_object.hpp"
 #include <string>
 #include <vector>
 #include <map>
@@ -15,7 +16,6 @@ constexpr static auto noFlags = JSON::Output::Flags::NONE;
 
 struct DummyObject : public ISerialisable {
 	int edges = 2;
-	float area = 2.1;
 	bool isRed = true;
 	std::string name = "MiniTriangle";
 	std::vector<int> edgeSizes = { 7, 9 };
@@ -43,7 +43,6 @@ struct DummyObject : public ISerialisable {
 		format.startWritingObject(noFlags, 9);
 		order = 0;
 		writeMember(format, "edges", edges);
-		writeMember(format, "area", area);
 		writeMember(format, "isRed", isRed);
 		writeMember(format, "name", name);
 		writeMember(format, "edgeSizes", edgeSizes);
@@ -56,7 +55,6 @@ struct DummyObject : public ISerialisable {
 	bool deserialiseInternal(IStructuredInput& format, SerialisationFlags::Flags) override {
 		format.startReadingObject(noFlags);
 		readMember(format, "edges", edges);
-		readMember(format, "area", area);
 		readMember(format, "isRed", isRed);
 		readMember(format, "name", name);
 		readMember(format, "edgeSizes", edgeSizes);
@@ -67,6 +65,13 @@ struct DummyObject : public ISerialisable {
 		format.endReadingObject(noFlags);
 		return true;
 	}
+};
+
+struct StandardObject : Serialisable<StandardObject> {
+	int index = key<"index"> = 3;
+	short int subIndex = key<"sub_index"> = 7;
+	bool deleted = key<"deleted"> = true;
+	std::string contents = key<"contents"> = "Not much yet";
 };
 
 int main(int argc, char** argv) {
@@ -195,7 +200,6 @@ int main(int argc, char** argv) {
 	
 	std::string dummyObjectJson =	"{\n"
 					"	\"edges\" : 3,\n"
-					"	\"area\" : 3.8,\n"
 					"	\"isRed\" : false,\n"
 					"	\"name\" : \"SuperTriangle\",\n"
 					"	\"edgeSizes\" : [\n"
@@ -220,7 +224,6 @@ int main(int argc, char** argv) {
 		std::cout << "Testing template facade" << std::endl;
 		DummyObject tested;
 		tested.edges = 3;
-		tested.area = 3.8;
 		tested.isRed = false;
 		tested.name = "SuperTriangle";
 		tested.edgeSizes = { 4, 5, 6 };
@@ -233,13 +236,37 @@ int main(int argc, char** argv) {
 		DummyObject tested2;
 		tested2.deserialise<JSON>(dummyObjectJson);
 		doATest(tested2.edges, 3);
-		doATest(tested2.area, 3.8);
 		doATest(tested2.isRed, false);
 		doATest(tested2.name, "SuperTriangle");
 		doATest(tested2.edgeSizes.size(), 3ull);
 		doATest(tested2.tags[0], "not red");
 		doATest(tested2.notes["none"], "nil");
 		doATest(tested2.story, nullptr);
+	}
+	
+	const std::string standardObjectJson =	"{\n"
+						"	\"index\" : 8,\n"
+						"	\"sub_index\" : 15,\n"
+						"	\"deleted\" : true,\n"
+						"	\"contents\" : \"Not much at this point\"\n"
+						"}";
+	
+	{
+		std::cout << "Testing Serialisable class write" << std::endl;
+		StandardObject tested;
+		tested.index = 8;
+		tested.subIndex = 15;
+		tested.contents = "Not much at this point";
+		std::string written = tested.serialise<JSON>();
+		doATest(written, standardObjectJson);
+		
+		std::cout << "Testing Serialisable class read" << std::endl;
+		StandardObject tested2;
+		tested2.deserialise<JSON>(standardObjectJson);
+		doATest(tested2.index, 8);
+		doATest(tested2.subIndex, 15);
+		doATest(tested2.deleted, true);
+		doATest(tested2.contents, "Not much at this point");
 	}
 
 

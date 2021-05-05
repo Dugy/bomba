@@ -111,18 +111,11 @@ struct BasicJson {
 		}
 		double readFloat(Flags flags) final override {
 			eatWhitespace();
-			int endPosition = _position;
-			while (_contents.begin() + endPosition < _contents.end()
-					&& ((_contents[endPosition] >= '0' && _contents[endPosition] <= '9')
-						|| _contents[endPosition] == 'e' || _contents[endPosition] == 'E'
-						|| _contents[endPosition] == '-' || _contents[endPosition] == '.')) {
-				endPosition++;
-			}
-			std::stringstream reading(std::string(&_contents[_position], &_contents[endPosition]));
-			reading.imbue(std::locale("C"));
 			double result = 0;
-			reading >> result;
-			_position = endPosition;
+			std::from_chars_result got = std::from_chars(&_contents[_position], &*_contents.end(), result);
+			_position += got.ptr - &_contents[_position];
+			if (got.ec != std::errc()) [[unlikely]]
+				fail("Expected JSON double");
 			return result;
 		}
 		std::string_view readString(Flags flags) final override {
@@ -288,14 +281,7 @@ struct BasicJson {
 			writeValueInternal(value);
 		}
 		void writeValue(Flags flags, double value) final override {
-//			writeValueInternal(value); // GCC is missing std::to_chars for floating point numbers
-			if (!std::isnan(value) && (!std::isinf(value))) [[likely]] {
-				std::stringstream added;
-				added.imbue(std::locale("C"));
-				added << value;
-				_contents += added.str().c_str();
-			} else
-				_contents += '0'; // NaN and inf not supported by Json
+			writeValueInternal(value);
 		}
 		void writeValue(Flags flags, std::string_view value) final override {
 			_contents += '"';
@@ -306,13 +292,13 @@ struct BasicJson {
 			}
 			_contents += '"';
 		}
-		void writeValue(Flags flags, bool value) {
+		void writeValue(Flags flags, bool value) final override {
 			if (value)
 				_contents += "true";
 			else
 				_contents += "false";
 		}
-		void writeNull(Flags flags) {
+		void writeNull(Flags flags) final override {
 			_contents += "null";
 		}
 		
