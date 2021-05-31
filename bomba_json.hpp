@@ -5,10 +5,13 @@
 #include "bomba_core.hpp"
 #endif
 
+#ifndef BOMBA_HTTP
+#include "bomba_core.hpp"
+#endif
+
 #include <array>
 #include <string_view>
 #include <charconv>
-#include <sstream>
 #include <cstring>
 #include <cmath>
 
@@ -96,7 +99,7 @@ struct BasicJson {
 				return TYPE_ARRAY;
 			if (nextChar == '{')
 				return TYPE_OBJECT;
-				
+
 			return TYPE_INVALID;
 		}
 		
@@ -121,8 +124,10 @@ struct BasicJson {
 		std::string_view readString(Flags flags) final override {
 			eatWhitespace();
 			char readingChar = getChar();
-			if (readingChar != '"') [[unlikely]]
+			if (readingChar != '"') [[unlikely]] {
+				//std::cout << "Found " << readingChar << " instead of \"" << std::endl;
 				fail("Expected JSON string");
+			}
 			
 			_resultBuffer.clear();
 			readingChar = getChar();
@@ -200,42 +205,24 @@ struct BasicJson {
 			}
 			return std::nullopt;
 		}
-		bool seekObjectElement(Flags flags, std::string_view name) final override {
+		void skipObjectElement(Flags flags) final override {
 			eatWhitespace();
-			char readingChar = getChar();
-			if (readingChar != '{') [[unlikely]]
-				fail("Excepted JSON object");
-			int depth = 1;
-			bool leftSide = true;
-			while (depth > 0) {
+			int depth = 0;
+			do {
 				char readingChar = getChar();
-				if (readingChar == '{')
+				if (readingChar == '{' || readingChar == '[')
 					depth++;
-				else if (readingChar == '}')
+				else if (readingChar == '}' || readingChar == ']')
 					depth--;
-				else if (depth == 1) {
-					if (readingChar == ':')
-						leftSide = false;
-					else if (readingChar == ',')
-						leftSide = true;
-
-					if (leftSide == true) {
-						leftSide = false;
-						auto property = nextObjectElement(flags);
-						if (!property) [[unlikely]]
-							fail("Expected JSON property name");
-						else if (*property == name)
-							return true;
-					}
-				}
-				if (readingChar == '"') {
+				else if (readingChar == ',') {
+					if (depth == 0)
+						break;
+				} else if (readingChar == '"') {
 					do {
 						readingChar = getChar();
 					} while (readingChar != '"' && _contents[_position - 1] != '\\');
 				}
-			}
-			getChar();
-			return false;
+			} while (_contents.begin() + _position < _contents.end());
 		}
 		void endReadingObject(Flags flags) final override {
 			eatWhitespace();
@@ -257,7 +244,7 @@ struct BasicJson {
 		bool _skipNewline = false;
 		
 		template <typename Num>
-		void writeValueInternal(Num value) {
+		void writeValue(Num value) {
 			constexpr int SIZE = 20;
 			std::array<char, SIZE> bytes;
 			memset(bytes.data(), 0, SIZE);
@@ -277,13 +264,13 @@ struct BasicJson {
 	public:
 		Output(StringType& contents) : _contents(contents) {}
 		
-		void writeValue(Flags, int64_t value) final override {
-			writeValueInternal(value);
+		void writeInt(Flags, int64_t value) final override {
+			writeValue(value);
 		}
-		void writeValue(Flags flags, double value) final override {
-			writeValueInternal(value);
+		void writeFloat(Flags flags, double value) final override {
+			writeValue(value);
 		}
-		void writeValue(Flags flags, std::string_view value) final override {
+		void writeString(Flags flags, std::string_view value) final override {
 			_contents += '"';
 			for (const char it : value) {
 				if (it == '\\' || it == '\n' || it == '"') [[unlikely]]
@@ -292,7 +279,7 @@ struct BasicJson {
 			}
 			_contents += '"';
 		}
-		void writeValue(Flags flags, bool value) final override {
+		void writeBool(Flags flags, bool value) final override {
 			if (value)
 				_contents += "true";
 			else
@@ -329,7 +316,7 @@ struct BasicJson {
 			if (index > 0)
 				_contents += ',';
 			newLine();
-			writeValue(flags, name);
+			writeString(flags, name);
 			_contents += " : ";
 		}
 		void endWritingObject(Flags flags) final override {

@@ -3,6 +3,7 @@
 #include "bomba_core.hpp"
 #include "bomba_json.hpp"
 #include "bomba_object.hpp"
+#include "bomba_json_rpc.hpp"
 #include <string>
 #include <vector>
 #include <map>
@@ -74,6 +75,129 @@ struct StandardObject : Serialisable<StandardObject> {
 	std::string contents = key<"contents"> = "Not much yet";
 };
 
+struct DummyRpcClass : IRemoteCallable {
+	std::string message;
+	int time = 0;
+	DummyRpcClass* backup = nullptr;
+	
+	struct : IRemoteCallable {
+		bool call(IStructuredInput* arguments, IStructuredOutput& result, Callback<>& introduceResult,
+				Callback<>&, std::optional<UserId>) const final override {
+			if (arguments) {
+				arguments->startReadingObject(noFlags);
+				arguments->endReadingObject(noFlags);
+			}
+			introduceResult();
+			result.writeString(noFlags, static_cast<DummyRpcClass*>(parent())->message);
+			return true;
+		}
+		std::string operator()() const {
+			IRpcResponder* responder = getResponder();
+			auto token = responder->send(UserId{}, this, makeCallback(
+						[] (IStructuredOutput& out, RequestToken) {
+				out.startWritingObject(noFlags, 0);
+				out.endWritingObject(noFlags);
+			}));
+			
+			std::string returned;
+			responder->getResponse(token, makeCallback([&] (IStructuredInput& response) {
+				returned = response.readString(noFlags);
+			}));
+			return returned;
+		}
+		using IRemoteCallable::IRemoteCallable;
+	} getMessage = this;
+	struct : IRemoteCallable {
+		bool call(IStructuredInput* arguments, IStructuredOutput& result, Callback<>& introduceResult,
+				Callback<>& introduceError, std::optional<UserId>) const final override {
+			if (!arguments) {
+				methodNotFoundError("Expected params");
+				return false;
+			}
+			arguments->startReadingObject(noFlags);
+			std::optional<std::string_view> name;
+			bool found = false;
+			while ((name = arguments->nextObjectElement(noFlags))) {
+				if (*name == "new_time") {
+					static_cast<DummyRpcClass*>(parent())->time =
+							arguments->readInt(noFlags);
+					found = true;
+				}
+			}
+			arguments->endReadingObject(noFlags);
+			if (!found) {
+				parseError("Missing mandatory argument");
+			}
+			introduceResult();
+			result.writeNull(noFlags);
+			return found;
+		}
+		void operator()(int newTime) {
+			IRpcResponder* responder = getResponder();
+			auto token = responder->send(UserId{}, this, makeCallback(
+						[newTime] (IStructuredOutput& out, RequestToken) {
+				out.startWritingObject(noFlags, 1);
+				out.introduceObjectMember(noFlags, "new_time", 0);
+				out.writeInt(noFlags, newTime);
+				out.endWritingObject(noFlags);
+			}));
+			
+			responder->getResponse(token, makeCallback([&] (IStructuredInput& response) {
+				response.readNull(noFlags);
+			}));
+		}
+		using IRemoteCallable::IRemoteCallable;
+	} setTime = this;
+	
+	std::string_view childName(const IRemoteCallable* child) const final override {
+		if (child == &getMessage)
+			return "get_message";
+		else if (child == &setTime)
+			return "set_time";
+		else if (child == backup && backup)
+			return "backup";
+		return "";
+	}
+	const IRemoteCallable* getChild(std::string_view name) const final override {
+		if (name == "get_message")
+			return &getMessage;
+		else if (name == "set_time")
+			return &setTime;
+		else if (name == "backup" && backup)
+			return backup;
+		std::cout << "Cant find " << name << std::endl;
+		methodNotFoundError("No such method");
+		return nullptr;
+	}
+	
+	void setBackup(DummyRpcClass* newBackup) {
+		backup = newBackup;
+		setSelfAsParent(backup);
+	}
+};
+
+struct FakeHttp {
+	using StringType = std::string;
+	
+	std::string written;
+	std::string toReturn;
+	RequestToken tokenToGive;
+	RequestToken tokenObtained;
+	
+	template <typename Lambda>
+	RequestToken post(UserId, const Lambda& call) {
+		call(written, tokenToGive);
+		return tokenToGive;
+	}
+	
+	template <typename Lambda>
+	void getResponse(RequestToken token, const Lambda& call) {
+		tokenToGive.id++;
+		tokenObtained = token;
+		call(toReturn);
+	}
+};
+
 int main(int argc, char** argv) {
 
 	int errors = 0;
@@ -110,17 +234,17 @@ int main(int argc, char** argv) {
 		
 		out.startWritingObject(noFlags, 4);
 		out.introduceObjectMember(noFlags, "thirteen", 0);
-		out.writeValue(noFlags, int64_t(13));
+		out.writeInt(noFlags, 13);
 		out.introduceObjectMember(noFlags, "twoAndHalf", 1);
-		out.writeValue(noFlags, 2.5);
+		out.writeFloat(noFlags, 2.5);
 		out.introduceObjectMember(noFlags, "no", 2);
-		out.writeValue(noFlags, false);
+		out.writeBool(noFlags, false);
 		out.introduceObjectMember(noFlags, "array", 3);
 		out.startWritingArray(noFlags, 2);
 		out.introduceArrayElement(noFlags, 0);
 		out.writeNull(noFlags);
 		out.introduceArrayElement(noFlags, 1);
-		out.writeValue(noFlags, std::string("strink"));
+		out.writeString(noFlags, "strink");
 		out.endWritingArray(noFlags);
 		out.endWritingObject(noFlags);
 		
@@ -181,23 +305,6 @@ int main(int argc, char** argv) {
 		doATest(in.good, true);
 	}
 	
-	{
-		std::cout << "Testing JSON seek" << std::endl;
-		std::string result;
-		JSON::Input in(simpleJsonCode);
-		
-		auto start = in.storePosition(noFlags);
-		doATest(in.seekObjectElement(noFlags, "twoAndHalf"), true);
-		doATest(in.good, true);
-		doATest(in.identifyType(noFlags), IStructuredInput::TYPE_FLOAT);
-		doATest(in.readFloat(noFlags), 2.5);
-		doATest(in.good, true);
-		
-		in.restorePosition(noFlags, start);
-		doATest(in.seekObjectElement(noFlags, "thirteen"), true);
-		doATest(in.good, true);
-	}
-	
 	std::string dummyObjectJson =	"{\n"
 					"	\"edges\" : 3,\n"
 					"	\"isRed\" : false,\n"
@@ -219,6 +326,26 @@ int main(int argc, char** argv) {
 					"	},\n"
 					"	\"story\" : null\n"
 					"}";
+	
+	{
+		std::cout << "Testing JSON skipping" << std::endl;
+		std::string result;
+		JSON::Input in(dummyObjectJson);
+		in.startReadingObject(noFlags);
+		
+		auto start = in.storePosition(noFlags);
+		for (int i = 0; i < 7; i++) {
+			in.nextObjectElement(noFlags);
+			in.skipObjectElement(noFlags);
+		}
+		doATest(*in.nextObjectElement(noFlags), "story");
+		doATest(in.identifyType(noFlags), IStructuredInput::TYPE_NULL);
+		doATest(in.good, true);
+		
+		in.restorePosition(noFlags, start);
+		doATest(*in.nextObjectElement(noFlags), "edges");
+		doATest(in.good, true);
+	}
 	
 	{
 		std::cout << "Testing template facade" << std::endl;
@@ -268,7 +395,116 @@ int main(int argc, char** argv) {
 		doATest(tested2.deleted, true);
 		doATest(tested2.contents, "Not much at this point");
 	}
-
+	
+	const std::string dummyRpcRequest1 =	"{\n"
+						"	\"jsonrpc\" : \"2.0\",\n"
+						"	\"id\" : 0,\n"
+						"	\"method\" : \"get_message\",\n"
+						"	\"params\" : {}\n"
+						"}";
+	
+	const std::string dummyRpcRequest2 =	"{\n"
+						"	\"jsonrpc\" : \"2.0\",\n"
+						"	\"id\" : 1,\n"
+						"	\"method\" : \"set_time\",\n"
+						"	\"params\" : {\n"
+						"		\"new_time\" : 1366\n"
+						"	}\n"
+						"}";
+	
+	const std::string dummyRpcRequest3 =	"{\n"
+						"	\"params\" : {\n"
+						"		\"new_time\" : 1366\n"
+						"	},\n"
+						"	\"method\" : \"set_time\",\n"
+						"	\"id\" : \"initial_time_set\","
+						"	\"jsonrpc\" : \"2.0\"\n"
+						"}";
+	
+	const std::string dummyRpcRequest4 =	"{\n"
+						"	\"jsonrpc\" : \"2.0\",\n"
+						"	\"id\" : 2,\n"
+						"	\"method\" : \"backup.get_message\",\n"
+						"	\"params\" : {}\n"
+						"}";
+						
+	const std::string dummyRpcReply1 = 	"{\n"
+						"	\"jsonrpc\" : \"2.0\",\n"
+						"	\"id\" : 0,\n"
+						"	\"result\" : \"nevermind\"\n"
+						"}";
+						
+	const std::string dummyRpcReply2 = 	"{\n"
+						"	\"jsonrpc\" : \"2.0\",\n"
+						"	\"id\" : 1,\n"
+						"	\"result\" : null\n"
+						"}";
+						
+	const std::string dummyRpcReply3 = 	"{\n"
+						"	\"jsonrpc\" : \"2.0\",\n"
+						"	\"result\" : null,\n"
+						"	\"id\" : \"initial_time_set\"\n"
+						"}";
+						
+	const std::string dummyRpcReply4 = 	"{\n"
+						"	\"jsonrpc\" : \"2.0\",\n"
+						"	\"id\" : 2,\n"
+						"	\"result\" : \"actually...\"\n"
+						"}";
+	
+	{
+		std::cout << "Testing RPC server" << std::endl;
+		
+		DummyRpcClass dummyRpcBackup;
+		DummyRpcClass dummyRpc;
+		dummyRpc.setBackup(&dummyRpcBackup);
+		dummyRpc.message = "nevermind";
+		dummyRpcBackup.message = "actually...";
+		std::string result;
+		auto goodCallback = makeCallback([] (std::string_view) {});
+		auto badCallback = makeCallback([] {});
+		JsonRpcServerProtocol protocol = &dummyRpc;
+		protocol.post("", "application/json", dummyRpcRequest1, result, goodCallback, badCallback);
+		doATest(result, dummyRpcReply1);
+		
+		result.clear();
+		protocol.post("", "application/json", dummyRpcRequest2, result, goodCallback, badCallback);
+		doATest(result, dummyRpcReply2);
+		doATest(dummyRpc.time, 1366);
+		
+		dummyRpc.time = 1200;
+		result.clear();
+		protocol.post("", "application/json", dummyRpcRequest3, result, goodCallback, badCallback);
+		doATest(result, dummyRpcReply3);
+		doATest(dummyRpc.time, 1366);
+		
+		result.clear();
+		protocol.post("", "application/json", dummyRpcRequest4, result, goodCallback, badCallback);
+		doATest(result, dummyRpcReply4);
+	}
+	
+	{
+		std::cout << "Testing RPC client" << std::endl;
+		
+		DummyRpcClass dummyRpcBackup;
+		DummyRpcClass dummyRpc;
+		dummyRpc.setBackup(&dummyRpcBackup);
+		FakeHttp http;
+		JsonRpcClientProtocol client{&dummyRpc, &http};
+		http.toReturn = dummyRpcReply1;
+		doATest(dummyRpc.getMessage(), "nevermind");
+		doATest(http.written, dummyRpcRequest1);
+		
+		http.written.clear();
+		http.toReturn = dummyRpcReply2;
+		dummyRpc.setTime(1366);
+		doATest(http.written, dummyRpcRequest2);
+		
+		http.written.clear();
+		http.toReturn = dummyRpcReply4;
+		doATest(dummyRpc.backup->getMessage(), "actually...");
+		doATest(http.written, dummyRpcRequest4);
+	}
 
 	std::cout << "Passed: " << (tests - errors) << " / " << tests << ", errors: " << errors << std::endl;
 

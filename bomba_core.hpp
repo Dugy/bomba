@@ -3,6 +3,7 @@
 #include <optional>
 #include <array>
 #include <string_view>
+#include <span>
 
 #ifndef BOMBA_ALTERNATIVE_ERROR_HANDLING
 #include <stdexcept>
@@ -17,7 +18,78 @@ struct ParseError : std::runtime_error {
 void parseError(const char* problem) {
 	throw ParseError(problem);
 }
+
+struct MethodNotFoundError : std::runtime_error {
+	using std::runtime_error::runtime_error;
+};
+void methodNotFoundError(const char* problem) {
+	throw MethodNotFoundError(problem);
+}
+
+struct RemoteError : std::runtime_error {
+	using std::runtime_error::runtime_error;
+};
+void remoteError(const char* problem) {
+	throw RemoteError(problem);
+}
+
+void logicError(const char* problem) {
+	throw std::logic_error(problem);
+}
 #endif
+
+template <typename T = void()>
+struct Callback {
+	// This should never be instantiated
+	static_assert(std::is_same_v<T, T>, "Invalid callback signature");
+};
+
+template <typename Returned, typename... Args>
+struct Callback<Returned(Args...)> {
+	virtual Returned operator() (Args&&... args) const = 0;
+};
+
+namespace Detail {
+
+template <typename Returned, typename Class, typename... Args>
+auto makeCallbackHelper(Class&& instance, Returned (Class::*method)(Args...) const) {
+	struct CallbackImpl : Callback<Returned(Args...)> {
+		Class instance;
+		CallbackImpl(Class&& instance) : instance(std::forward<Class>(instance)) {}
+		Returned operator() (Args&&... args) const final override {
+			return instance(std::forward<Args>(args)...);
+		}
+	} retval = std::move(instance);
+	return retval;
+}
+
+} // namespace Detail
+
+template <typename T>
+auto makeCallback(T&& func) {
+	return Detail::makeCallbackHelper(std::forward<T>(func), &T::operator());
+}
+
+template <typename Resource, typename Destruction>
+auto makeRaiiContainer(Resource&& resource, Destruction&& destruction) {
+	class RaiiContainer {
+		Resource _resource;
+		Destruction _destruction;
+	public:
+		RaiiContainer(Resource&& resource, Destruction&& destruction)
+				: _resource(std::move(resource)), _destruction(std::move(destruction)) {}
+		~RaiiContainer() {
+			_destruction();
+		}
+		Resource* operator->() {
+			return _resource;
+		}
+		Resource& operator*() {
+			return *_resource;
+		}
+	};
+	return RaiiContainer(std::move(resource), std::move(destruction));
+}
 
 namespace SerialisationFlags {
 	enum Flags {
@@ -30,10 +102,10 @@ namespace SerialisationFlags {
 struct IStructuredOutput {
 	using Flags = SerialisationFlags::Flags;
 
-	virtual void writeValue(Flags flags, int64_t value) = 0;
-	virtual void writeValue(Flags flags, double value) = 0;
-	virtual void writeValue(Flags flags, std::string_view value) = 0;
-	virtual void writeValue(Flags flags, bool value) = 0;
+	virtual void writeInt(Flags flags, int64_t value) = 0;
+	virtual void writeFloat(Flags flags, double value) = 0;
+	virtual void writeString(Flags flags, std::string_view value) = 0;
+	virtual void writeBool(Flags flags, bool value) = 0;
 	virtual void writeNull(Flags flags) = 0;
 	
 	virtual void startWritingArray(Flags flags, int size) = 0;
@@ -75,7 +147,7 @@ struct IStructuredInput {
 	
 	virtual void startReadingObject(Flags flags) = 0;
 	virtual std::optional<std::string_view> nextObjectElement(Flags flags) = 0;
-	virtual bool seekObjectElement(Flags flags, std::string_view name) = 0;
+	virtual void skipObjectElement(Flags flags) = 0;
 	virtual void endReadingObject(Flags flags) = 0;
 	
 	struct Location {
@@ -83,11 +155,77 @@ struct IStructuredInput {
 	};
 	virtual Location storePosition(Flags flags) = 0;
 	virtual void restorePosition(Flags flags, Location location) = 0;
+	
+	bool seekObjectElement(Flags flags, std::string_view name, bool nameAlreadyRead) {
+		if (nameAlreadyRead)
+			skipObjectElement(flags);
+		while (std::optional<std::string_view> nextName = nextObjectElement(flags)) {
+			if (*nextName == name)
+				return true;
+		}
+		return false;
+	}
+};
+
+template<int Size>
+struct StringLiteral {
+	constexpr StringLiteral(const char (&str)[Size]) {
+		std::copy_n(str, Size, value);
+	}
+	constexpr int size() const {
+		return Size - 1;
+	}
+	constexpr const char* c_str() const {
+		return value;
+	}
+	constexpr char& operator[](int index) {
+		return value[index];
+	}
+	constexpr char operator[](int index) const {
+		return value[index];
+	}
+	constexpr bool operator==(const char* other) const {
+		return compare(other);
+	}
+	template <int Size2>
+	constexpr bool operator==(const StringLiteral<Size2>& other) const {
+		if constexpr(Size != Size2)
+			return false;
+		else
+			return compare(other.c_str());
+	}
+	constexpr operator std::string_view() const {
+		return std::string_view(c_str());
+	}
+	char value[Size];
+
+private:
+	template <int depth = 0>
+	constexpr bool compare(const char* other) const {
+		if constexpr(depth == Size)
+			return true;
+		else {
+			if (value[depth] != *other)
+				return false;
+			return compare<depth + 1>(other + 1);
+		}
+	}
 };
 
 template <typename T>
 concept AssembledString = std::is_same_v<T&, decltype(std::declval<T>() += 'a')>
 		&& std::is_same_v<T&, decltype(std::declval<T>() += "a")>
+		&& std::is_convertible_v<T, std::string_view>
+		&& std::is_void_v<decltype(std::declval<T>().clear())>;
+		
+		
+
+template <typename T>
+concept BetterAssembledString = std::is_constructible_v<T>
+		&& std::is_same_v<T&, decltype(std::declval<T>() += 'a')>
+		&& std::is_same_v<T&, decltype(std::declval<T>() += "a")>
+		&& std::is_same_v<T&, decltype(std::declval<T>() += std::string_view("a"))>
+		&& std::is_same_v<T&, decltype(std::declval<T>() += std::declval<T>())>
 		&& std::is_convertible_v<T, std::string_view>
 		&& std::is_void_v<decltype(std::declval<T>().clear())>;
 
@@ -127,11 +265,143 @@ protected:
 	friend void deserialiseMember(IStructuredInput&, ISerialisable&, SerialisationFlags::Flags);
 };
 
+class IRemoteCallable;
+	
+struct UserId {
+	int id;
+};
+struct RequestToken {
+	int id = 0;
+	bool operator==(RequestToken other) const {
+		return id == other.id;
+	}
+	bool operator!=(RequestToken other) const {
+		return id != other.id;
+	}
+};
+
+struct IRpcResponder {
+	virtual RequestToken send(UserId user, const IRemoteCallable* method,
+			const Callback<void(IStructuredOutput&, RequestToken)>& request) = 0;
+	virtual bool getResponse(RequestToken token, const Callback<void(IStructuredInput&)>& reader) = 0;
+	virtual bool hasResponse(RequestToken token) {
+		return true; // If not async, it's awailable and getting it causes it to wait
+	}
+};
+
+class IRemoteCallable {
+	IRemoteCallable* _parent = nullptr;
+	IRpcResponder* _responder = nullptr;
+protected:
+	void setSelfAsParent(IRemoteCallable* reparented) {
+		reparented->_parent = this;
+		reparented->_responder = _responder;
+	}
+	void unsetParent(IRemoteCallable* reparented) {
+		reparented->_parent = nullptr;
+		reparented->_responder = nullptr;
+	}
+	IRpcResponder* getResponder() const {
+		if (!_responder && _parent) [[unlikely]]
+			const_cast<IRpcResponder*&>(_responder) = _parent->getResponder(); // Lazy loading
+		if (!_responder) [[unlikely]]
+			logicError("Calling a remote procedure while not being a client");
+		return _responder;
+	}
+	
+public:
+	IRemoteCallable(IRemoteCallable* parent = nullptr, IRpcResponder* responder = nullptr)
+			: _parent(parent), _responder(responder) {}
+	
+	IRemoteCallable* parent() const {
+		return _parent;
+	}
+	
+	void setResponder(IRpcResponder* responder) {
+		_responder = responder;
+	}
+	
+	virtual bool call(IStructuredInput* arguments, IStructuredOutput& result, Callback<>& introduceResult,
+			Callback<>& introduceError, std::optional<UserId> user = std::nullopt) const {
+		methodNotFoundError("No such method");
+		return false;
+	}
+	virtual const IRemoteCallable* getChild(std::string_view name) const {
+		methodNotFoundError("Incomplete method name");
+		return nullptr;
+	}
+	virtual std::string_view childName(const IRemoteCallable* child) const {
+		methodNotFoundError("No such method");
+		return "";
+	}
+};
+
+template <StringLiteral Separator, BetterAssembledString StringType = std::string>
+struct PathWithSeparator {
+	static const IRemoteCallable* findCallable(std::string_view path, const IRemoteCallable* root) {
+		auto start = path.begin();
+		const IRemoteCallable* current = root;
+		while (start < path.end()) {
+			auto end = start;
+			while (end != path.end()) {
+				for (int i = 0; (end + i) != path.end() && *(end + i) == Separator[i]; i++) {
+					if (i + 1 == Separator.size()) {
+						end += i;
+						goto foundSeparator;
+					}
+				}
+				end++;
+			}
+			foundSeparator:;
+			
+			current = current->getChild(std::string_view(start, end));
+			if (!current)
+				return nullptr;
+			end++;
+			start = end;
+		}
+		return current;
+	}
+	
+	static StringType constructPath(const IRemoteCallable* callable) {
+		if (!callable->parent())
+			return StringType();
+
+		StringType path;
+		prependPath(callable->parent(), path);
+		path += callable->parent()->childName(callable);
+		return path;
+	}
+	
+private:
+	static void prependPath(const IRemoteCallable* callable, StringType& pathSoFar) {
+		if (!callable->parent())
+			return;
+			
+		prependPath(callable->parent(), pathSoFar);
+		pathSoFar += callable->parent()->childName(callable);
+		pathSoFar += Separator.c_str();
+	}
+};
+
+enum class ServerReaction {
+	OK,
+	READ_ON,
+	WRONG_REPLY,
+	DISCONNECT,
+};
+
+struct INetworkClient {
+	virtual void writeRequest(std::span<char> written) = 0;
+	virtual void getResponse(RequestToken token, Callback<std::tuple<ServerReaction, RequestToken,
+			std::span<char>::iterator>(std::span<char> input, bool identified)> reader) = 0;
+};
+
 // Matching types to the interface
 
 template <std::integral Integer>
 void serialiseMember(IStructuredOutput& out, Integer value, SerialisationFlags::Flags flags) {
-	out.writeValue(flags, int64_t(value));
+	out.writeInt(flags, value);
 }
 
 template <std::integral Integer>
@@ -141,7 +411,7 @@ void deserialiseMember(IStructuredInput& in, Integer& value, SerialisationFlags:
 
 template <std::floating_point Float>
 void serialiseMember(IStructuredOutput& out, Float value, SerialisationFlags::Flags flags) {
-	out.writeValue(flags, double(value));
+	out.writeFloat(flags, value);
 }
 
 template <std::floating_point Float>
@@ -150,7 +420,7 @@ void deserialiseMember(IStructuredInput& in, Float& value, SerialisationFlags::F
 }
 
 void serialiseMember(IStructuredOutput& out, bool value, SerialisationFlags::Flags flags) {
-	out.writeValue(flags, value);
+	out.writeBool(flags, value);
 }
 
 void deserialiseMember(IStructuredInput& in, bool& value, SerialisationFlags::Flags flags) {
@@ -173,7 +443,7 @@ concept MemberString = requires(T value, std::string_view view) {
 
 template <MemberString StringType>
 void serialiseMember(IStructuredOutput& out, const StringType& value, SerialisationFlags::Flags flags) {
-	out.writeValue(flags, std::string_view(value));
+	out.writeString(flags, value);
 }
 
 template <MemberString StringType>

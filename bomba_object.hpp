@@ -11,51 +11,6 @@
 #include <vector>
 #endif
 
-template<int Size>
-struct StringLiteral {
-	constexpr StringLiteral(const char (&str)[Size]) {
-		std::copy_n(str, Size, value);
-	}
-	constexpr int size() const {
-		return Size;
-	}
-	constexpr const char* c_str() const {
-		return value;
-	}
-	constexpr char& operator[](int index) {
-		return value[index];
-	}
-	constexpr char operator[](int index) const {
-		return value[index];
-	}
-	constexpr bool operator==(const char* other) const {
-		return compare(other);
-	}
-	template <int Size2>
-	constexpr bool operator==(const StringLiteral<Size2>& other) const {
-		if constexpr(Size != Size2)
-			return false;
-		else
-			return compare(other.c_str());
-	}
-	constexpr operator std::string_view() const {
-		return std::string_view(c_str());
-	}
-	char value[Size];
-
-private:
-	template <int depth = 0>
-	constexpr bool compare(const char* other) const {
-		if constexpr(depth == Size)
-			return true;
-		else {
-			if (value[depth] != *other)
-				return false;
-			return compare<depth + 1>(other + 1);
-		}
-	}
-};
-
 namespace Bomba {
 
 // Suppress GCC warnings that I should not do this
