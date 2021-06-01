@@ -121,7 +121,7 @@ struct BasicJson {
 			eatWhitespace();
 			char readingChar = getChar();
 			if (readingChar != '"') [[unlikely]] {
-				//std::cout << "Found " << readingChar << " instead of \"" << std::endl;
+				std::cout << "Found " << readingChar << " instead of \"" << std::endl;
 				fail("Expected JSON string");
 			}
 			
