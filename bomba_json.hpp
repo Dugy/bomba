@@ -5,10 +5,6 @@
 #include "bomba_core.hpp"
 #endif
 
-#ifndef BOMBA_HTTP
-#include "bomba_core.hpp"
-#endif
-
 #include <array>
 #include <string_view>
 #include <charconv>

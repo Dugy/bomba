@@ -95,7 +95,9 @@ template <typename Child, int Index = 0, typename SFINAE = void>
 struct ObjectInfo {
 	static void serialise(IStructuredOutput& out, const ISerialisable* parent, SerialisationFlags::Flags flags) {}
 	static void deserialise(IStructuredInput& in, ISerialisable* parent,
-			SerialisationFlags::Flags flags, std::string_view memberName) {}
+				SerialisationFlags::Flags flags, std::string_view memberName) {
+		in.skipObjectElement(flags);
+	}
 	constexpr static int size = 0;
 	static std::array<int, size + Index>& getOffsets() {
 		static std::array<int, size + Index> offsets;
@@ -365,11 +367,14 @@ protected:
 		while ((name = format.nextObjectElement(flags))) {
 #ifdef NO_DEFECT_REPORT_2118
 			for (int i = 0; i < int(_setup.size()); i++) {
-				if (_setup[i].name == name)
+				if (_setup[i].name == name) {
 					_setup[i].deserialiser(format, this, _setup[i].offset,
 							SerialisationFlags::Flags(flags | _setup[i].flags));
-				break;
+					goto found;
+				}
 			}
+			format.skipObjectElement(flags);
+			found:;
 #else
 			ObjectInfo<Child>::deserialise(format, this, flags, *name);
 #endif

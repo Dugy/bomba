@@ -50,7 +50,7 @@ public:
 		auto introduceError = makeCallback([&] () {
 			output.introduceObjectMember(noFlags, "error", index++);
 		});
-		auto call = [&] (BasicJson<StringType>::Input* input) {
+		auto call = [&] (typename BasicJson<StringType>::Input* input) {
 			try {
 				auto introduceResult = makeCallback([&] () {
 					output.introduceObjectMember(noFlags, "result", index++);
@@ -138,7 +138,7 @@ public:
 	RequestToken send(UserId user, const IRemoteCallable* method,
 				const Callback<void(IStructuredOutput&, RequestToken token)>& request) final override {
 		auto methodName = PathWithSeparator<".", StringType>::constructPath(method);
-		return _upper->post(UserId{}, [this, methodName, &request]
+		return _upper->post(UserId{}, [methodName, &request]
 					(typename HttpType::StringType& output, RequestToken token) {
 			typename BasicJson<StringType>::Output writer = output;
 			writer.startWritingObject(noFlags, 3);
@@ -155,7 +155,7 @@ public:
 	}
 	bool getResponse(RequestToken token, const Callback<void(IStructuredInput&)>& reader) final override {
 		bool retval = false;
-		_upper->getResponse(token, [this, &reader, &retval, token] (std::string_view unparsed) {
+		_upper->getResponse(token, [&reader, &retval, token] (std::string_view unparsed) {
 			typename BasicJson<StringType>::Input input(unparsed);
 			input.startReadingObject(noFlags);
 			std::optional<std::string_view> nextName;
