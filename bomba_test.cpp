@@ -3,6 +3,7 @@
 #include "bomba_core.hpp"
 #include "bomba_json.hpp"
 #include "bomba_object.hpp"
+#include "bomba_rpc_object.hpp"
 #include "bomba_json_rpc.hpp"
 #include <string>
 #include <vector>
@@ -174,6 +175,22 @@ struct DummyRpcClass : IRemoteCallable {
 		backup = newBackup;
 		setSelfAsParent(backup);
 	}
+};
+
+struct AdvancedRpcClass : RpcObject<AdvancedRpcClass> {
+	std::string message;
+
+	RpcMember<[] (AdvancedRpcClass* parent) {
+		return parent->message;
+	}> getMessage = child<"get_message">;
+
+	RpcMember<[] (AdvancedRpcClass* parent, std::string newMessage = name("message")) {
+		parent->message = newMessage;
+	}> setMessage = child<"set_message">;
+
+	RpcMember<[] (int first = name("first"), int second = name("second")) {
+		return first + second;
+	}> sum = child<"sum">;
 };
 
 struct FakeHttp {
@@ -504,6 +521,79 @@ int main(int argc, char** argv) {
 		http.toReturn = dummyRpcReply4;
 		doATest(dummyRpc.backup->getMessage(), "actually...");
 		doATest(http.written, dummyRpcRequest4);
+	}
+	
+	const std::string advancedRpcRequest1 =	"{\n"
+						"	\"jsonrpc\" : \"2.0\",\n"
+						"	\"id\" : 0,\n"
+						"	\"method\" : \"set_message\",\n"
+						"	\"params\" : {\n"
+						"		\"message\" : \"Flag\"\n"
+						"	}\n"
+						"}";
+	const std::string advancedRpcRequest2 =	"{\n"
+						"	\"jsonrpc\" : \"2.0\",\n"
+						"	\"id\" : 1,\n"
+						"	\"method\" : \"get_message\",\n"
+						"	\"params\" : {}\n"
+						"}";
+	const std::string advancedRpcRequest3 =	"{\n"
+						"	\"jsonrpc\" : \"2.0\",\n"
+						"	\"id\" : 2,\n"
+						"	\"method\" : \"sum\",\n"
+						"	\"params\" : {\n"
+						"		\"first\" : 2,\n"
+						"		\"second\" : 3\n"
+						"	}\n"
+						"}";
+
+	const std::string advancedRpcResponse1 =	"{\n"
+							"	\"jsonrpc\" : \"2.0\",\n"
+							"	\"id\" : 0,\n"
+							"	\"result\" : null\n"
+							"}";
+	const std::string advancedRpcResponse2 =	"{\n"
+							"	\"jsonrpc\" : \"2.0\",\n"
+							"	\"id\" : 1,\n"
+							"	\"result\" : \"Flag\"\n"
+							"}";
+	const std::string advancedRpcResponse3 =	"{\n"
+							"	\"jsonrpc\" : \"2.0\",\n"
+							"	\"id\" : 2,\n"
+							"	\"result\" : 5\n"
+							"}";
+	
+	{
+		std::cout << "Testing RPC object" << std::endl;
+		AdvancedRpcClass advancedRpc;
+		std::string result;
+		auto goodCallback = Bomba::makeCallback([] (std::string_view) {});
+		auto badCallback = Bomba::makeCallback([] {});
+		Bomba::JsonRpcServerProtocol protocol = &advancedRpc;
+		protocol.post("", "application/json", advancedRpcRequest1, result, goodCallback, badCallback);
+		doATest(result, advancedRpcResponse1);
+		result.clear();
+		protocol.post("", "application/json", advancedRpcRequest2, result, goodCallback, badCallback);
+		doATest(result, advancedRpcResponse2);
+		result.clear();
+		protocol.post("", "application/json", advancedRpcRequest3, result, goodCallback, badCallback);
+		doATest(result, advancedRpcResponse3);
+
+		FakeHttp http;
+		Bomba::JsonRpcClientProtocol client{&advancedRpc, &http};
+		http.toReturn = advancedRpcResponse1;
+		advancedRpc.setMessage("Flag");
+		doATest(http.written, advancedRpcRequest1);
+
+		http.written.clear();
+		http.toReturn = advancedRpcResponse2;
+		doATest(advancedRpc.getMessage(), "Flag");
+		doATest(http.written, advancedRpcRequest2);
+
+		http.written.clear();
+		http.toReturn = advancedRpcResponse3;
+		doATest(advancedRpc.sum(2, 3), 5);
+		doATest(http.written, advancedRpcRequest3);
 	}
 
 	std::cout << "Passed: " << (tests - errors) << " / " << tests << ", errors: " << errors << std::endl;

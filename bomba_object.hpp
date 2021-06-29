@@ -50,7 +50,7 @@ struct SerialiserStorage {
 	friend constexpr DeserialisingFunction deserialiser(SerialiserStorage<Child, Index>);
 	friend constexpr SerialisationFlags::Flags memberFlags(SerialiserStorage<Child, Index>);
 	friend constexpr auto name(SerialiserStorage<Child, Index>);
-	constexpr friend auto boolIfDeclared(SerialiserStorage<Child, Index>);
+	friend constexpr auto boolIfDeclared(SerialiserStorage<Child, Index>);
 };
 
 template <typename Child, int Index, SerialisingFunction Serialiser,
@@ -68,7 +68,7 @@ struct SerialiserSaver {
 	friend constexpr SerialisationFlags::Flags memberFlags(SerialiserStorage<Child, Index>) {
 		return Flags;
 	}
-	constexpr friend auto boolIfDeclared(SerialiserStorage<Child, Index>) {
+	friend constexpr auto boolIfDeclared(SerialiserStorage<Child, Index>) {
 		return true;
 	}
 	constexpr static bool instantiated = true;
@@ -403,3 +403,4 @@ protected:
 };
 
 } // namespace Bomba
+#undef NO_DEFECT_REPORT_2118
