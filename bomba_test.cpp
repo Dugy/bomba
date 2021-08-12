@@ -1,10 +1,13 @@
-//usr/bin/g++ --std=c++20 -Wall $0 -g -o ${o=`mktemp`} && exec $o $*
+//usr/bin/g++ --std=c++20 -Wall $0 -g -lpthread -o ${o=`mktemp`} && exec $o $*
 #include <iostream>
 #include "bomba_core.hpp"
 #include "bomba_json.hpp"
 #include "bomba_object.hpp"
 #include "bomba_rpc_object.hpp"
 #include "bomba_json_rpc.hpp"
+#include "bomba_http.hpp"
+#include "bomba_tcp_server.hpp"
+#include "bomba_sync_client.hpp"
 #include <string>
 #include <vector>
 #include <map>
@@ -82,8 +85,8 @@ struct DummyRpcClass : IRemoteCallable {
 	DummyRpcClass* backup = nullptr;
 	
 	struct : IRemoteCallable {
-		bool call(IStructuredInput* arguments, IStructuredOutput& result, Callback<>& introduceResult,
-				Callback<>&, std::optional<UserId>) const final override {
+		bool call(IStructuredInput* arguments, IStructuredOutput& result, const Callback<>& introduceResult,
+				const Callback<>&, std::optional<UserId>) const final override {
 			if (arguments) {
 				arguments->startReadingObject(noFlags);
 				arguments->endReadingObject(noFlags);
@@ -109,8 +112,8 @@ struct DummyRpcClass : IRemoteCallable {
 		using IRemoteCallable::IRemoteCallable;
 	} getMessage = this;
 	struct : IRemoteCallable {
-		bool call(IStructuredInput* arguments, IStructuredOutput& result, Callback<>& introduceResult,
-				Callback<>& introduceError, std::optional<UserId>) const final override {
+		bool call(IStructuredInput* arguments, IStructuredOutput& result, const Callback<>& introduceResult,
+				const Callback<>& introduceError, std::optional<UserId>) const final override {
 			if (!arguments) {
 				methodNotFoundError("Expected params");
 				return false;
@@ -167,7 +170,6 @@ struct DummyRpcClass : IRemoteCallable {
 		else if (name == "backup" && backup)
 			return backup;
 		std::cout << "Cant find " << name << std::endl;
-		methodNotFoundError("No such method");
 		return nullptr;
 	}
 	
@@ -215,6 +217,39 @@ struct FakeHttp {
 	}
 };
 
+struct FakeClient : ITcpClient {
+	std::string request;
+	std::string response;
+	ServerReaction reaction;
+	int64_t position;
+	std::function<void()> expandResponse;
+	void writeRequest(std::span<char> written) override {
+		request = std::string_view(written.data(), written.size());
+	}
+	void getResponse(RequestToken, const Callback<std::tuple<ServerReaction, RequestToken, int64_t>
+					 (std::span<char> input, bool identified)>& reader) override {
+		if (expandResponse)
+			expandResponse();
+		auto [reactionObtained, token, positionObtained] = reader(std::span<char>(response.begin(), response.size()), true);
+		reaction = reactionObtained;
+		position = positionObtained;
+	}
+};
+
+template <typename Responder>
+struct FakeServer {
+	Responder* responder;
+	std::pair<std::string, ServerReaction> respond(std::string request) {
+		auto session = responder->getSession();
+		std::string response;
+		ServerReaction result = session.respond(std::span<char>(request.data(), request.size()),
+						makeCallback([&] (std::span<const char> output) {
+				response = std::string_view(output.data(), output.size());
+		})).first;
+		return {response, result};
+	}
+};
+
 int main(int argc, char** argv) {
 
 	int errors = 0;
@@ -234,16 +269,32 @@ int main(int argc, char** argv) {
 			}
 		}
 	};
+	auto doATestIgnoringWhitespace = [&] (std::string is, std::string shouldBe) {
+		tests++;
+		auto isWhitespace = [] (char letter) {
+			return letter == ' ' || letter == '\t' || letter == '\n' || letter == '\r';
+		};
+		for (int i = 0, j = 0; i < int(is.size()) && j < int(shouldBe.size()); i++, j++) {
+			while (isWhitespace(is[i]) && i < int(is.size())) i++;
+			while (isWhitespace(shouldBe[j]) && j < int(shouldBe.size())) j++;
+			if ((i >= int(is.size())) != (j >= int(shouldBe.size())) || is[i] != shouldBe[j]) {
+				errors++;
+				std::cout << "Test failed: " << is << " instead of " << shouldBe << std::endl;
+				break;
+			}
+		}
+	};
 
-	std::string simpleJsonCode =	"{\n"
-					"	\"thirteen\" : 13,\n"
-					"	\"twoAndHalf\" : 2.5,\n"
-					"	\"no\" : false,\n"
-					"	\"array\" : [\n"
-					"		null,\n"
-					"		\"strink\"\n"
-					"	]\n"
-					"}";
+	std::string simpleJsonCode =
+			"{\n"
+			"	\"thirteen\" : 13,\n"
+			"	\"twoAndHalf\" : 2.5,\n"
+			"	\"no\" : false,\n"
+			"	\"array\" : [\n"
+			"		null,\n"
+			"		\"strink\"\n"
+			"	]\n"
+			"}";
 	{
 		std::cout << "Testing JSON write" << std::endl;
 		std::string result;
@@ -322,27 +373,28 @@ int main(int argc, char** argv) {
 		doATest(in.good, true);
 	}
 	
-	std::string dummyObjectJson =	"{\n"
-					"	\"edges\" : 3,\n"
-					"	\"isRed\" : false,\n"
-					"	\"name\" : \"SuperTriangle\",\n"
-					"	\"edgeSizes\" : [\n"
-					"		4,\n"
-					"		5,\n"
-					"		6\n"
-					"	],\n"
-					"	\"ticks\" : [],\n"
-					"	\"tags\" : [\n"
-					"		\"not red\",\n"
-					"		\"triangle\",\n"
-					"		\"super\"\n"
-					"	],\n"
-					"	\"notes\" : {\n"
-					"		\"none\" : \"nil\",\n"
-					"		\"nothing\" : \"null\"\n"
-					"	},\n"
-					"	\"story\" : null\n"
-					"}";
+	std::string dummyObjectJson =
+			"{\n"
+			"	\"edges\" : 3,\n"
+			"	\"isRed\" : false,\n"
+			"	\"name\" : \"SuperTriangle\",\n"
+			"	\"edgeSizes\" : [\n"
+			"		4,\n"
+			"		5,\n"
+			"		6\n"
+			"	],\n"
+			"	\"ticks\" : [],\n"
+			"	\"tags\" : [\n"
+			"		\"not red\",\n"
+			"		\"triangle\",\n"
+			"		\"super\"\n"
+			"	],\n"
+			"	\"notes\" : {\n"
+			"		\"none\" : \"nil\",\n"
+			"		\"nothing\" : \"null\"\n"
+			"	},\n"
+			"	\"story\" : null\n"
+			"}";
 	
 	{
 		std::cout << "Testing JSON skipping" << std::endl;
@@ -388,12 +440,13 @@ int main(int argc, char** argv) {
 		doATest(tested2.story, nullptr);
 	}
 	
-	const std::string standardObjectJson =	"{\n"
-						"	\"index\" : 8,\n"
-						"	\"sub_index\" : 15,\n"
-						"	\"deleted\" : true,\n"
-						"	\"contents\" : \"Not much at this point\"\n"
-						"}";
+	const std::string standardObjectJson =
+			"{\n"
+			"	\"index\" : 8,\n"
+			"	\"sub_index\" : 15,\n"
+			"	\"deleted\" : true,\n"
+			"	\"contents\" : \"Not much at this point\"\n"
+			"}";
 	
 	{
 		std::cout << "Testing Serialisable class write" << std::endl;
@@ -413,61 +466,69 @@ int main(int argc, char** argv) {
 		doATest(tested2.contents, "Not much at this point");
 	}
 	
-	const std::string dummyRpcRequest1 =	"{\n"
-						"	\"jsonrpc\" : \"2.0\",\n"
-						"	\"id\" : 0,\n"
-						"	\"method\" : \"get_message\",\n"
-						"	\"params\" : {}\n"
-						"}";
+	const std::string dummyRpcRequest1 =
+			"{\n"
+			"	\"jsonrpc\" : \"2.0\",\n"
+			"	\"id\" : 0,\n"
+			"	\"method\" : \"get_message\",\n"
+			"	\"params\" : {}\n"
+			"}";
 	
-	const std::string dummyRpcRequest2 =	"{\n"
-						"	\"jsonrpc\" : \"2.0\",\n"
-						"	\"id\" : 1,\n"
-						"	\"method\" : \"set_time\",\n"
-						"	\"params\" : {\n"
-						"		\"new_time\" : 1366\n"
-						"	}\n"
-						"}";
+	const std::string dummyRpcRequest2 =
+			"{\n"
+			"	\"jsonrpc\" : \"2.0\",\n"
+			"	\"id\" : 1,\n"
+			"	\"method\" : \"set_time\",\n"
+			"	\"params\" : {\n"
+			"		\"new_time\" : 1366\n"
+			"	}\n"
+			"}";
 	
-	const std::string dummyRpcRequest3 =	"{\n"
-						"	\"params\" : {\n"
-						"		\"new_time\" : 1366\n"
-						"	},\n"
-						"	\"method\" : \"set_time\",\n"
-						"	\"id\" : \"initial_time_set\","
-						"	\"jsonrpc\" : \"2.0\"\n"
-						"}";
+	const std::string dummyRpcRequest3 =
+			"{\n"
+			"	\"params\" : {\n"
+			"		\"new_time\" : 1366\n"
+			"	},\n"
+			"	\"method\" : \"set_time\",\n"
+			"	\"id\" : \"initial_time_set\","
+			"	\"jsonrpc\" : \"2.0\"\n"
+			"}";
 	
-	const std::string dummyRpcRequest4 =	"{\n"
-						"	\"jsonrpc\" : \"2.0\",\n"
-						"	\"id\" : 2,\n"
-						"	\"method\" : \"backup.get_message\",\n"
-						"	\"params\" : {}\n"
-						"}";
+	const std::string dummyRpcRequest4 =
+			"{\n"
+			"	\"jsonrpc\" : \"2.0\",\n"
+			"	\"id\" : 2,\n"
+			"	\"method\" : \"backup.get_message\",\n"
+			"	\"params\" : {}\n"
+			"}";
 						
-	const std::string dummyRpcReply1 = 	"{\n"
-						"	\"jsonrpc\" : \"2.0\",\n"
-						"	\"id\" : 0,\n"
-						"	\"result\" : \"nevermind\"\n"
-						"}";
+	const std::string dummyRpcReply1 =
+		 	"{\n"
+			"	\"jsonrpc\" : \"2.0\",\n"
+			"	\"id\" : 0,\n"
+			"	\"result\" : \"nevermind\"\n"
+			"}";
 						
-	const std::string dummyRpcReply2 = 	"{\n"
-						"	\"jsonrpc\" : \"2.0\",\n"
-						"	\"id\" : 1,\n"
-						"	\"result\" : null\n"
-						"}";
+	const std::string dummyRpcReply2 =
+		 	"{\n"
+			"	\"jsonrpc\" : \"2.0\",\n"
+			"	\"id\" : 1,\n"
+			"	\"result\" : null\n"
+			"}";
 						
-	const std::string dummyRpcReply3 = 	"{\n"
-						"	\"jsonrpc\" : \"2.0\",\n"
-						"	\"result\" : null,\n"
-						"	\"id\" : \"initial_time_set\"\n"
-						"}";
+	const std::string dummyRpcReply3 =
+		 	"{\n"
+			"	\"jsonrpc\" : \"2.0\",\n"
+			"	\"result\" : null,\n"
+			"	\"id\" : \"initial_time_set\"\n"
+			"}";
 						
-	const std::string dummyRpcReply4 = 	"{\n"
-						"	\"jsonrpc\" : \"2.0\",\n"
-						"	\"id\" : 2,\n"
-						"	\"result\" : \"actually...\"\n"
-						"}";
+	const std::string dummyRpcReply4 =
+		 	"{\n"
+			"	\"jsonrpc\" : \"2.0\",\n"
+			"	\"id\" : 2,\n"
+			"	\"result\" : \"actually...\"\n"
+			"}";
 	
 	{
 		std::cout << "Testing RPC server" << std::endl;
@@ -523,45 +584,51 @@ int main(int argc, char** argv) {
 		doATest(http.written, dummyRpcRequest4);
 	}
 	
-	const std::string advancedRpcRequest1 =	"{\n"
-						"	\"jsonrpc\" : \"2.0\",\n"
-						"	\"id\" : 0,\n"
-						"	\"method\" : \"set_message\",\n"
-						"	\"params\" : {\n"
-						"		\"message\" : \"Flag\"\n"
-						"	}\n"
+	const std::string advancedRpcRequest1 =
+			"{\n"
+			"	\"jsonrpc\" : \"2.0\",\n"
+			"	\"id\" : 0,\n"
+			"	\"method\" : \"set_message\",\n"
+			"	\"params\" : {\n"
+			"		\"message\" : \"Flag\"\n"
+			"	}\n"
 						"}";
-	const std::string advancedRpcRequest2 =	"{\n"
-						"	\"jsonrpc\" : \"2.0\",\n"
-						"	\"id\" : 1,\n"
-						"	\"method\" : \"get_message\",\n"
-						"	\"params\" : {}\n"
-						"}";
-	const std::string advancedRpcRequest3 =	"{\n"
-						"	\"jsonrpc\" : \"2.0\",\n"
-						"	\"id\" : 2,\n"
-						"	\"method\" : \"sum\",\n"
-						"	\"params\" : {\n"
-						"		\"first\" : 2,\n"
-						"		\"second\" : 3\n"
-						"	}\n"
-						"}";
+	const std::string advancedRpcRequest2 =
+			"{\n"
+			"	\"jsonrpc\" : \"2.0\",\n"
+			"	\"id\" : 1,\n"
+			"	\"method\" : \"get_message\",\n"
+			"	\"params\" : {}\n"
+			"}";
+	const std::string advancedRpcRequest3 =
+			"{\n"
+			"	\"jsonrpc\" : \"2.0\",\n"
+			"	\"id\" : 2,\n"
+			"	\"method\" : \"sum\",\n"
+			"	\"params\" : {\n"
+			"		\"first\" : 2,\n"
+			"		\"second\" : 3\n"
+			"	}\n"
+			"}";
 
-	const std::string advancedRpcResponse1 =	"{\n"
-							"	\"jsonrpc\" : \"2.0\",\n"
-							"	\"id\" : 0,\n"
-							"	\"result\" : null\n"
-							"}";
-	const std::string advancedRpcResponse2 =	"{\n"
-							"	\"jsonrpc\" : \"2.0\",\n"
-							"	\"id\" : 1,\n"
-							"	\"result\" : \"Flag\"\n"
-							"}";
-	const std::string advancedRpcResponse3 =	"{\n"
-							"	\"jsonrpc\" : \"2.0\",\n"
-							"	\"id\" : 2,\n"
-							"	\"result\" : 5\n"
-							"}";
+	const std::string advancedRpcResponse1 =
+			"{\n"
+			"	\"jsonrpc\" : \"2.0\",\n"
+			"	\"id\" : 0,\n"
+			"	\"result\" : null\n"
+			"}";
+	const std::string advancedRpcResponse2 =
+			"{\n"
+			"	\"jsonrpc\" : \"2.0\",\n"
+			"	\"id\" : 1,\n"
+			"	\"result\" : \"Flag\"\n"
+			"}";
+	const std::string advancedRpcResponse3 =
+			"{\n"
+			"	\"jsonrpc\" : \"2.0\",\n"
+			"	\"id\" : 2,\n"
+			"	\"result\" : 5\n"
+			"}";
 	
 	{
 		std::cout << "Testing RPC object" << std::endl;
@@ -594,6 +661,196 @@ int main(int argc, char** argv) {
 		http.toReturn = advancedRpcResponse3;
 		doATest(advancedRpc.sum(2, 3), 5);
 		doATest(http.written, advancedRpcRequest3);
+	}
+
+	const std::string expectedGet =
+			"GET /conspiracy.html HTTP/1.1\r\n"
+			"Host: faecesbook.con\r\n"
+			"\r\n";
+					
+	const std::string replyToGet =
+			"HTTP/1.1 200 OK\r\n"
+			"Date: Sun, 11 Jul 2021 18:46:33 GMT\r\n" // Extra entries that must be ignored
+			"Server: Sioux\r\n"
+			"Content-Length: 9\r\n"
+			"\r\n"
+			"Blablabla";
+	
+	{
+		std::cout << "Testing HTTP client" << std::endl;
+
+		FakeClient client;
+		Bomba::HttpClient<> http(&client, "faecesbook.con");
+		auto token = http.get("/conspiracy.html");
+		doATest(client.request, expectedGet);
+
+		std::string downloaded;
+		client.expandResponse = [&, step = 1] () mutable {
+			client.response = replyToGet.substr(0, std::min<int>(step, replyToGet.size()));
+			step++;
+		};
+		http.getResponse(token, Bomba::makeCallback( [&] (std::span<char> response) {
+			downloaded = std::string_view(response.data(), response.size());
+			return true;
+		}));
+		doATest(downloaded, "Blablabla");
+		doATest(int(client.reaction), int(ServerReaction::OK));
+	}
+
+	const std::string someHtml =
+R"~(<!doctype html>
+<html lang=en>
+	<head><title>CONSPIRACY</title></head>
+	<body>The bloodsucking shapeshifting reptilians are trying to steal the souls of our children! Awaken sheeple!</body>
+</html>)~";
+
+	const std::string sentHtml =
+			"HTTP/1.1 200 OK\r\n"
+			"Content-Length: 197\r\n"
+			"ContentType: text/html\r\n"
+			"\r\n"
+			"<!doctype html>\n"
+			"<html lang=en>\n"
+			"	<head><title>CONSPIRACY</title></head>\n"
+			"	<body>The bloodsucking shapeshifting reptilians are trying to steal the souls of our children! Awaken sheeple!</body>\n"
+			"</html>";
+	{
+		std::cout << "Testing HTTP server" << std::endl;
+		Bomba::SimpleGetResponder getResponder;
+		getResponder.resource = someHtml;
+		Bomba::DummyPostResponder postResponder;
+		Bomba::HttpServer<std::string, Bomba::SimpleGetResponder, Bomba::DummyPostResponder> http = {&getResponder, &postResponder};
+		FakeServer server = {&http};
+		auto [response, reaction] = server.respond(expectedGet);
+		doATest(int(reaction), int(ServerReaction::OK));
+		doATestIgnoringWhitespace(response, sentHtml);
+	}
+
+	const std::string longerExpectedGet =
+				"GET /?assigned=%26%2344608%3B%26%2351221%3B%26%2351008%3B+told+us HTTP/1.1\r\n"
+				"Host: faecesbook.con\r\n"
+				"\r\n";
+
+	const std::string expectedPost =
+				"POST / HTTP/1.1\r\n"
+				"Content-Length: 58\r\n"
+				"Host: faecesbook.con\r\n"
+				"Content-Type: application/x-www-form-urlencoded\r\n"
+				"\r\n"
+				"assigned=G%f6tterd%e4merung%21+End+is+comi%26%23328%3bg%21";
+
+	const std::string expectedPostResponse =
+				"HTTP/1.1 204 No Content\r\n\r\n";
+				
+	static std::string rpcTestAssigned = "";
+	using InlineMethod = Bomba::RpcLambda<[] (std::string newValue = Bomba::name("assigned")) {
+		rpcTestAssigned = newValue;
+	}>;
+	
+	{
+		std::cout << "Testing better HTTP client" << std::endl;
+		FakeClient client;
+		Bomba::HttpClient<> http(&client, "faecesbook.con");
+		auto token = http.get("/?assigned=%26%2344608%3B%26%2351221%3B%26%2351008%3B+told+us");
+		doATest(client.request, longerExpectedGet);
+		client.response = sentHtml;
+		
+		std::string downloaded;
+		http.getResponse(token, Bomba::makeCallback( [&] (std::span<char> response) {
+			downloaded = std::string_view(response.data(), response.size());
+			return true;
+		}));
+		doATest(someHtml, downloaded);
+
+		rpcTestAssigned.clear();
+		InlineMethod inlineMethod;
+		inlineMethod.setResponder(&http);
+		client.response = expectedPostResponse;
+		inlineMethod("Götterdämerung! End is comiňg!");
+		doATestIgnoringWhitespace(client.request, expectedPost);
+	}
+
+	{
+		std::cout << "Testing better HTTP server" << std::endl;
+		Bomba::SimpleGetResponder getResponder;
+		getResponder.resource = someHtml;
+		InlineMethod inlineMethod;
+		Bomba::RpcGetResponder<std::string, Bomba::SimpleGetResponder> betterGetResponder(&getResponder, &inlineMethod);
+		Bomba::HtmlPostResponder postResponder(&inlineMethod);
+		Bomba::HttpServer http(&betterGetResponder, &postResponder);
+		FakeServer server = {&http};
+		{
+			auto [response, reaction] = server.respond(expectedGet);
+			doATest(int(reaction), int(ServerReaction::OK));
+			doATestIgnoringWhitespace(response, sentHtml);
+		}
+		{
+			auto [response, reaction] = server.respond(longerExpectedGet);
+			doATest(int(reaction), int(ServerReaction::OK));
+			doATestIgnoringWhitespace(response, sentHtml);
+			doATest("김정은 told us", rpcTestAssigned);
+		}
+		{
+			auto [response, reaction] = server.respond(expectedPost);
+			doATest(int(reaction), int(ServerReaction::OK));
+			doATestIgnoringWhitespace(response, expectedPostResponse);
+			doATest("Götterdämerung! End is comiňg!", rpcTestAssigned);
+		}
+	}
+	
+	auto makeHttpTestFixture = [&] {
+		struct Fixture {
+			Bomba::SimpleGetResponder getResponder;
+			InlineMethod methodServer;
+			Bomba::RpcGetResponder<std::string, Bomba::SimpleGetResponder> betterGetResponder = {&getResponder, &methodServer};
+			Bomba::HtmlPostResponder postResponder = {&methodServer};
+			Bomba::HttpServer<std::string, decltype(betterGetResponder), decltype(postResponder)> httpServer = {&betterGetResponder, &postResponder};
+			Bomba::BackgroundTcpServer<decltype(httpServer)> server = {&httpServer, 8901}; // Very unlikely this port will be used for something
+			
+			InlineMethod methodClient;
+			Bomba::SyncNetworkClient client = {"0.0.0.0", "8901"};
+			Bomba::HttpClient<> httpClient = {&client, "0.0.0.0"};
+			
+			Fixture(const std::string& html) {
+				getResponder.resource = html;
+				methodClient.setResponder(&httpClient);
+			}
+
+		};
+		return Fixture(someHtml);
+	};
+	
+	{
+		std::cout << "Testing HTTP loop on localhost" << std::endl;
+		auto fixture = makeHttpTestFixture();
+		auto response = fixture.httpClient.get("/");
+		fixture.httpClient.getResponse(response, Bomba::makeCallback([&](std::span<char> response) {
+			doATest(someHtml, std::string_view(response.data(), response.size()));
+			return true;
+		}));
+		fixture.methodClient("We are so woke");
+		doATest(rpcTestAssigned, "We are so woke");
+	}
+	
+	{
+		std::cout << "Internally benchmarking HTTP server's GET...";
+		auto fixture = makeHttpTestFixture();
+		for (int i = 0; i < 2000; i++) {
+			auto response = fixture.httpClient.get("/");
+			fixture.httpClient.getResponse(response, Bomba::makeCallback([&](std::span<char>) {
+				return true;
+			}));
+		}
+		std::cout << " average response time is " << fixture.server.averageResponseTime().count() << " ns" << std::endl;
+	}
+	
+	{
+		std::cout << "Internally benchmarking HTTP server's POST...";
+		auto fixture = makeHttpTestFixture();
+		for (int i = 0; i < 2000; i++) {
+			fixture.methodClient("Protest against the clouds!");
+		}
+		std::cout << " average response time is " << fixture.server.averageResponseTime().count() << " ns" << std::endl;
 	}
 
 	std::cout << "Passed: " << (tests - errors) << " / " << tests << ", errors: " << errors << std::endl;

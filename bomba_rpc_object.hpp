@@ -136,7 +136,6 @@ namespace Detail {
 			logicError("Broken structure");
 		}
 		static IRemoteCallable* instance(const IRemoteCallable* parent, std::string_view name) {
-			methodNotFoundError("No such method");
 			return nullptr;
 		}
 	};
@@ -162,8 +161,10 @@ namespace Detail {
 
 	struct RpcArgumentInfo {
 		const char* name = nullptr;
+		SerialisationFlags::Flags flags = SerialisationFlags::NONE;
 		void operator=(const RpcArgumentInfo& other) volatile {
 			name = other.name;
+			flags = other.flags;
 		}
 	};
 
@@ -256,9 +257,9 @@ namespace Detail {
 				return;
 			} else {
 				if (name == argumentInfo[Index].name)
-					deserialiseMember(in, std::get<ArgIndex>(args), flags);
+					deserialiseMember(in, std::get<ArgIndex>(args), SerialisationFlags::Flags(flags | argumentInfo[Index].flags));
 				else
-					setArg<ArgIndex + 1>(name, args, in, flags);
+					setArg<ArgIndex + 1>(name, args, in, SerialisationFlags::Flags(flags | argumentInfo[Index].flags));
 			}
 		}
 
@@ -271,8 +272,8 @@ namespace Detail {
 			}
 		}
 
-		bool call(IStructuredInput* arguments, IStructuredOutput& result, Callback<>& introduceResult,
-				Callback<>&, std::optional<UserId>) const final override {
+		bool call(IStructuredInput* arguments, IStructuredOutput& result, const Callback<>& introduceResult,
+				const Callback<>&, std::optional<UserId>) const final override {
 			ArgsTuple input;
 			if constexpr(usesParent()) {
 				std::get<0>(input) = static_cast<FirstArg>(parent());
@@ -307,8 +308,17 @@ namespace Detail {
 		template <typename First, typename... Others>
 		void remoteCallHelper(IStructuredOutput& out, First first, Others... args) const {
 			constexpr int index = argumentInfoSize - sizeof...(Others) - 1;
-			out.introduceObjectMember(Flags, argumentInfo[index].name, index);
-			serialiseMember(out, first, Flags);
+			SerialisationFlags::Flags flags = SerialisationFlags::Flags(Flags | argumentInfo[index].flags);
+			auto write = [&] () {
+				out.introduceObjectMember(flags, argumentInfo[index].name, index);
+				serialiseMember(out, first, flags);
+			};
+			if constexpr(std::is_same_v<bool, First>) {
+				if (first || !(flags & SerialisationFlags::OMIT_FALSE))
+					write();
+			} else {
+				write();
+			}
 			remoteCallHelper(out, args...);
 		}
 
@@ -396,12 +406,28 @@ namespace Detail {
 
 	template <typename Parent, StringLiteral Name>
 	struct ChildObjectInitialisator { };
+
+	class NamedFlagSetter : Omniconverter {
+		const char* name = nullptr;
+		SerialisationFlags::Flags flags = SerialisationFlags::NONE;
+		NamedFlagSetter(const char* name, SerialisationFlags::Flags flags) : name(name), flags(flags) {}
+	public:
+		NamedFlagSetter(const char* name) : name(name) {}
+
+		NamedFlagSetter operator|(SerialisationFlags::Flags newFlag) {
+			return NamedFlagSetter{name, SerialisationFlags::Flags(flags | newFlag)};
+		}
+		template <typename T>
+		operator T() const {
+			auto instance = Detail::RpcSetupData::instance;
+			instance->noticeArg(Detail::RpcArgumentInfo{name, flags});
+			return {};
+		}
+	};
 } // namespace Detail
 
-Detail::Omniconverter name(const char* value) {
-	auto instance = Detail::RpcSetupData::instance;
-	instance->noticeArg(Detail::RpcArgumentInfo{value});
-	return Detail::Omniconverter();
+Detail::NamedFlagSetter name(const char* value) {
+	return Detail::NamedFlagSetter(value);
 }
 
 template <auto Func, SerialisationFlags::Flags Flags = SerialisationFlags::NONE>
@@ -453,7 +479,7 @@ protected:
 				return nameObtained;
 			}
 		}
-		methodNotFoundError("No such child");
+		logicError("Broken structure");
 		return "";
 #else
 		std::string_view result;
@@ -469,7 +495,6 @@ protected:
 			if (it.name == name)
 				return it.childGettingFunction(this, it.offset, name);
 		}
-		methodNotFoundError("No such method");
 		return nullptr;
 #else
 		return Detail::ChildAccess<Derived>::instance(this, name);

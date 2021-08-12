@@ -242,8 +242,7 @@ struct BasicJson {
 		template <typename Num>
 		void writeValue(Num value) {
 			constexpr int SIZE = 20;
-			std::array<char, SIZE> bytes;
-			memset(bytes.data(), 0, SIZE);
+			std::array<char, SIZE> bytes = {};
 			std::to_chars(bytes.data(), bytes.data() + SIZE, value);
 			_contents += &bytes[0];
 		}

@@ -4,6 +4,7 @@
 #include <array>
 #include <string_view>
 #include <span>
+#include <tuple>
 
 #ifndef BOMBA_ALTERNATIVE_ERROR_HANDLING
 #include <stdexcept>
@@ -52,7 +53,7 @@ struct Callback<Returned(Args...)> {
 namespace Detail {
 
 template <typename Returned, typename Class, typename... Args>
-auto makeCallbackHelper(Class&& instance, Returned (Class::*method)(Args...) const) {
+auto makeCallbackHelper(Class&& instance, Returned (Class::*)(Args...) const) {
 	struct CallbackImpl : Callback<Returned(Args...)> {
 		Class instance;
 		CallbackImpl(Class&& instance) : instance(std::forward<Class>(instance)) {}
@@ -96,6 +97,8 @@ namespace SerialisationFlags {
 		NONE = 0,
 		NOT_CHILD = 0x1,
 		MANDATORY = 0x2,
+		OMIT_FALSE = 0x4,
+		EMPTY_IS_NULL = 0x8,
 	};
 };
 
@@ -115,6 +118,22 @@ struct IStructuredOutput {
 	virtual void startWritingObject(Flags flags, int size) = 0;
 	virtual void introduceObjectMember(Flags flags, std::string_view name, int index) = 0;
 	virtual void endWritingObject(Flags flags) = 0;
+};
+
+struct NullStructredOutput : IStructuredOutput {
+	void writeInt(Flags, int64_t) final override {}
+	void writeFloat(Flags, double) final override {}
+	void writeString(Flags, std::string_view) final override {}
+	void writeBool(Flags, bool) final override {}
+	void writeNull(Flags) final override {}
+
+	void startWritingArray(Flags, int) final override {}
+	void introduceArrayElement(Flags, int) final override {}
+	void endWritingArray(Flags) final override {}
+
+	void startWritingObject(Flags, int) final override {}
+	void introduceObjectMember(Flags, std::string_view, int) final override {}
+	void endWritingObject(Flags) final override {}
 };
 
 struct IStructuredInput {
@@ -217,8 +236,6 @@ concept AssembledString = std::is_same_v<T&, decltype(std::declval<T>() += 'a')>
 		&& std::is_same_v<T&, decltype(std::declval<T>() += "a")>
 		&& std::is_convertible_v<T, std::string_view>
 		&& std::is_void_v<decltype(std::declval<T>().clear())>;
-		
-		
 
 template <typename T>
 concept BetterAssembledString = std::is_constructible_v<T>
@@ -321,17 +338,15 @@ public:
 		_responder = responder;
 	}
 	
-	virtual bool call(IStructuredInput* arguments, IStructuredOutput& result, Callback<>& introduceResult,
-			Callback<>& introduceError, std::optional<UserId> user = std::nullopt) const {
-		methodNotFoundError("No such method");
+	virtual bool call(IStructuredInput* arguments, IStructuredOutput& result, const Callback<>& introduceResult,
+			const Callback<>& introduceError, std::optional<UserId> user = std::nullopt) const {
 		return false;
 	}
 	virtual const IRemoteCallable* getChild(std::string_view name) const {
-		methodNotFoundError("Incomplete method name");
 		return nullptr;
 	}
 	virtual std::string_view childName(const IRemoteCallable* child) const {
-		methodNotFoundError("No such method");
+		logicError("No such structure");
 		return "";
 	}
 };
@@ -391,10 +406,15 @@ enum class ServerReaction {
 	DISCONNECT,
 };
 
-struct INetworkClient {
+struct ITcpClient {
 	virtual void writeRequest(std::span<char> written) = 0;
-	virtual void getResponse(RequestToken token, Callback<std::tuple<ServerReaction, RequestToken,
-			std::span<char>::iterator>(std::span<char> input, bool identified)> reader) = 0;
+	virtual void getResponse(RequestToken token, const Callback<std::tuple<ServerReaction, RequestToken, int64_t>
+			(std::span<char> input, bool identified)>& reader) = 0;
+};
+
+struct ITcpResponder {
+	virtual std::pair<ServerReaction, int64_t> respond(
+				std::span<char> input, const Callback<void(std::span<const char>)>& writer) = 0;
 };
 
 // Matching types to the interface
