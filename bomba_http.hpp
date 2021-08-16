@@ -416,11 +416,6 @@ concept HttpPostResponder = requires(T value, std::string_view input, std::span<
 	{ value.post(input, input, body, writer) } -> std::same_as<bool>;
 };
 
-StringLiteral httpMethodNotAllowed =
-		"HTTP/1.1 405 Method Not Allowed\n\r"
-		"Content-Length: 72\r\n\r\n"
-		"<!doctype html><html lang=en><title>Error 405: Method not allowd</title>";
-
 struct DummyGetResponder {
 	template <AssembledString ResponseStringType = std::string>
 	static bool get(std::string_view, const Callback<ResponseStringType&(std::string_view)>&) {
@@ -727,12 +722,25 @@ class HttpClient : public IRpcResponder {
 		}));
 	}
 	bool getResponse(RequestToken token, const Callback<void(IStructuredInput&)>& reader) override {
-		getResponse(token, makeCallback([&] (std::span<char> data) {
+		getResponse(token, makeCallback([&] (std::span<char> data, bool success) {
+			if (!success) {
+				remoteError("Server did not respond with OK");
+				return false;
+			}
 			typename HtmlMessageEncoding<StringT>::Input input = {std::string_view(data.data(), data.size())};
 			reader(input);
 			return true;
 		}));
 		return true;
+	}
+
+	bool hasResponse(RequestToken token) override {
+		bool has = false;
+		getResponse(token, makeCallback([&] (std::span<char> data, bool) {
+			has = true;
+			return true;
+		}));
+		return has;
 	}
 
 public:
@@ -777,10 +785,11 @@ public:
 		return _lastTokenWritten;
 	}
 
-	void getResponse(RequestToken token, const Callback<bool(std::span<char>)>& reader) {
+	void getResponse(RequestToken token, const Callback<bool(std::span<char> message, bool success)>& reader) {
 		bool obtained = false;
 		while (!obtained) {
-			constexpr auto checkServerResponse = [](std::span<char> header, int size) {
+			int resultCode = 0;
+			auto checkServerResponse = [&] (std::span<char> header, int size) {
 				int separator1 = 0;
 				while (header[separator1] != ' ' && separator1 < size)
 					separator1++;
@@ -788,12 +797,7 @@ public:
 				int separator2 = separator1 + 1;
 				while (header[separator2] != ' ' && separator2 < size)
 					separator2++;
-				int resultCode = 0;
 				std::from_chars(&header[separator1], &header[separator2], resultCode);
-				if (resultCode < 200 || resultCode >= 300) {
-					remoteError("Server did not respond with OK");
-					return false;
-				}
 				return true;
 			};
 			Detail::HttpParseState state;
@@ -812,15 +816,18 @@ public:
 					return {ServerReaction::READ_ON, RequestToken{}, input.size()};
 				}
 			
-				if (token != RequestToken{ _lastTokenRead.id + 1}) {
+				if (!identified && token != RequestToken{ _lastTokenRead.id + 1}) {
+					int offset = state.transition + std::max(0, state.bodySize);
 					state = Detail::HttpParseState{};
 					_lastTokenRead.id++;
-					return {ServerReaction::WRONG_REPLY, _lastTokenRead, state.transition + state.bodySize};
+					return {ServerReaction::WRONG_REPLY, _lastTokenRead, offset};
 				}					
 				obtained = true;
 
-				reader(std::span<char>(input.begin() + state.transition, input.begin() + state.transition + state.bodySize));
-				_lastTokenRead.id++;
+				reader(std::span<char>(input.begin() + state.transition, input.begin() + state.transition + state.bodySize),
+						(resultCode >= 200 && resultCode < 300));
+				if (!identified)
+					_lastTokenRead.id++;
 				return {ServerReaction::OK, _lastTokenRead, state.transition + state.bodySize};
 			}));
 		}

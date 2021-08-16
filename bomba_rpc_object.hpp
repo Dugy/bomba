@@ -26,6 +26,11 @@ namespace Bomba {
 
 namespace Detail {
 
+template <typename Returned>
+struct IResponseReader {
+	virtual Returned readResponse(IRpcResponder* responder, RequestToken token) const = 0;
+};
+
 	template <typename FirstArg, typename... Args>
 	struct ArgsTupleProvider {
 		using type = std::tuple<FirstArg, Args...>;
@@ -192,8 +197,69 @@ namespace Detail {
 		}
 	};
 
+	template <typename Returned>
+	class FutureBase {
+	protected:
+		const IResponseReader<Returned>* _reader = nullptr;
+		IRpcResponder* _responder = nullptr;
+		RequestToken _token = {};
+
+		FutureBase(const FutureBase&) = delete;
+		void operator=(const FutureBase&) = delete;
+	public:
+		FutureBase(const IResponseReader<Returned>* reader, IRpcResponder* responder, RequestToken token)
+			: _reader(reader), _responder(responder), _token(token) {}
+		FutureBase() = default;
+	};
+} // namespace Detail
+
+// Placeholder class to be replaced by std::future once it's extended by Extensions for Concurrency
+template <typename Returned>
+class Future : Detail::FutureBase<Returned> {
+	mutable std::optional<Returned> _value = std::nullopt;
+	using Base = Detail::FutureBase<Returned>;
+public:
+	using Base::FutureBase;
+	Future(Returned&& value) : _value(value) {}
+
+	Returned get() const {
+		if (!_value)
+			_value = Base::_reader->readResponse(Base::_responder, Base::_token);
+		return *_value;
+	}
+
+	bool is_ready() const {
+		if (_value)
+			return true;
+		return Base::_responder->hasResponse(Base::_token);
+	}
+};
+
+template <>
+class Future<void> : Detail::FutureBase<void> {
+	using Base = Detail::FutureBase<void>;
+	mutable bool _done = false;
+public:
+	using Base::FutureBase;
+	Future() = default;
+
+	void get() const {
+		if (_done)
+			return;
+		Base::_reader->readResponse(Base::_responder, Base::_token);
+		_done = true;
+	}
+
+	bool is_ready() const {
+		if (_done)
+			return true;
+		return (_done = Base::_responder->hasResponse(Base::_token));
+	}
+};
+
+namespace Detail {
 	template <auto Lambda, SerialisationFlags::Flags Flags, typename LambdaType, typename Returned, typename FirstArg, typename... Args>
-	class RpcLambdaParent : public IRemoteCallable {
+	class RpcLambdaParent : public IRemoteCallable, public IResponseReader<Returned> {
 	protected:
 		using ArgsTuple = typename ArgsTupleProvider<FirstArg, Args...>::type;
 		constexpr static int argsSize = std::tuple_size<ArgsTuple>::value;
@@ -324,33 +390,47 @@ namespace Detail {
 
 		void remoteCallHelper(IStructuredOutput&) const {}
 
-		Returned responseReader(IRpcResponder* responder, RequestToken token) const
-				requires(!std::is_same_v<void, Returned>) {
-			Returned result;
-			responder->getResponse(token, makeCallback([&](IStructuredInput& in) {
-				deserialiseMember(in, result, Flags);
-			}));
-			return result;
+		Returned readResponse(IRpcResponder* responder, RequestToken token) const override {
+			if constexpr(std::is_void_v<Returned>) {
+				responder->getResponse(token, makeCallback([&](IStructuredInput& in) {
+					in.readNull(Flags);
+				}));
+			} else {
+				Returned result;
+				responder->getResponse(token, makeCallback([&](IStructuredInput& in) {
+					deserialiseMember(in, result, Flags);
+				}));
+				return result;
+			}
 		}
 
-		void responseReader(IRpcResponder* responder, RequestToken token) const
-				requires(std::is_same_v<void, Returned>) {
-			responder->getResponse(token, makeCallback([&](IStructuredInput& in) {
-				in.readNull(Flags);
+		template <typename... AnyArgs>
+		RequestToken sendRequest(IRpcResponder* responder, AnyArgs&&... args) const {
+			return responder->send({}, this, makeCallback(
+					[&](IStructuredOutput& out, RequestToken) {
+				out.startWritingObject(Flags, argumentInfoSize);
+				if constexpr(!std::is_void_v<FirstArg>) {
+					remoteCallHelper(out, std::forward<AnyArgs>(args)...);
+				}
+				out.endWritingObject(Flags);
 			}));
+		}
+
+		template <typename... AnyArgs>
+		Future<Returned> immediateCallToFuture(AnyArgs&&... args) const {
+			if constexpr(std::is_void_v<Returned>) {
+				Lambda(std::forward<AnyArgs>(args)...);
+				return {};
+			} else {
+				return Future<Returned>(Lambda(std::forward<AnyArgs>(args)...));
+			}
 		}
 
 	public:
 		Returned operator()(Args... args) const requires(usesParent()) {
 			IRpcResponder* responder = getResponder();
 			if (responder) {
-				RequestToken token = responder->send({}, this, makeCallback(
-						[&](IStructuredOutput& out, RequestToken) {
-					out.startWritingObject(Flags, argumentInfoSize);
-					remoteCallHelper(out, args...);
-					out.endWritingObject(Flags);
-				}));
-				return responseReader(responder, token);
+				return readResponse(responder, sendRequest(responder, std::forward<Args>(args)...));
 			} else {
 				return Lambda(static_cast<FirstArg>(parent()), std::forward<Args>(args)...);
 			}
@@ -359,13 +439,7 @@ namespace Detail {
 				requires(!usesParent() && !std::is_same_v<void, FirstArg>) {
 			IRpcResponder* responder = getResponder();
 			if (responder) {
-				RequestToken token = responder->send({}, this, makeCallback(
-						[&](IStructuredOutput& out, RequestToken) {
-					out.startWritingObject(Flags, argumentInfoSize);
-					remoteCallHelper(out, first, args...);
-					out.endWritingObject(Flags);
-				}));
-				return responseReader(responder, token);
+				return readResponse(responder, sendRequest(responder, std::forward<FirstArg>(first), std::forward<Args>(args)...));
 			} else {
 				return Lambda(std::forward<FirstArg>(first), std::forward<Args>(args)...);
 			}
@@ -373,14 +447,38 @@ namespace Detail {
 		Returned operator()() const requires(std::is_same_v<void, FirstArg>) {
 			IRpcResponder* responder = getResponder();
 			if (responder) {
-				RequestToken token = responder->send({}, this, makeCallback(
-						[&](IStructuredOutput& out, RequestToken) {
-					out.startWritingObject(Flags, 0);
-					out.endWritingObject(Flags);
-				}));
-				return responseReader(responder, token);
+				return readResponse(responder, sendRequest(responder));
 			} else {
 				return Lambda();
+			}
+		}
+
+		Future<Returned> async(Args... args) const requires(usesParent()) {
+			IRpcResponder* responder = getResponder();
+			if (responder) {
+				RequestToken token = sendRequest(responder, std::forward<Args>(args)...);
+				return Future<Returned>(this, responder, token);
+			} else {
+				return immediateCallToFuture(static_cast<FirstArg>(parent()), std::forward<Args>(args)...);
+			}
+		}
+		Future<Returned> async(FirstArg first, Args... args) const
+				requires(!usesParent() && !std::is_same_v<void, FirstArg>) {
+			IRpcResponder* responder = getResponder();
+			if (responder) {
+				RequestToken token = sendRequest(responder, std::forward<FirstArg>(first), std::forward<Args>(args)...);
+				return Future<Returned>(this, responder, token);
+			} else {
+				return immediateCallToFuture(std::forward<FirstArg>(first), std::forward<Args>(args)...);
+			}
+		}
+		Future<Returned> async() const requires(std::is_same_v<void, FirstArg>) {
+			IRpcResponder* responder = getResponder();
+			if (responder) {
+				RequestToken token = sendRequest(responder);
+				return Future<Returned>(this, responder, token);
+			} else {
+				return immediateCallToFuture();
 			}
 		}
 	};

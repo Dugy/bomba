@@ -301,8 +301,8 @@ struct IRpcResponder {
 	virtual RequestToken send(UserId user, const IRemoteCallable* method,
 			const Callback<void(IStructuredOutput&, RequestToken)>& request) = 0;
 	virtual bool getResponse(RequestToken token, const Callback<void(IStructuredInput&)>& reader) = 0;
-	virtual bool hasResponse(RequestToken token) {
-		return true; // If not async, it's awailable and getting it causes it to wait
+	virtual bool hasResponse(RequestToken) {
+		return true; // If not sufficiently async, it's sort of always available and getting it causes it to wait
 	}
 };
 
@@ -410,6 +410,10 @@ struct ITcpClient {
 	virtual void writeRequest(std::span<char> written) = 0;
 	virtual void getResponse(RequestToken token, const Callback<std::tuple<ServerReaction, RequestToken, int64_t>
 			(std::span<char> input, bool identified)>& reader) = 0;
+	virtual void tryToGetResponse(RequestToken token, const Callback<std::tuple<ServerReaction, RequestToken, int64_t>
+			(std::span<char> input, bool identified)>& reader) {
+		getResponse(token, reader);
+	}
 };
 
 struct ITcpResponder {
@@ -607,4 +611,13 @@ void deserialiseMember(IStructuredInput& in, Ptr& value, SerialisationFlags::Fla
 
 
 } // namespace Bomba
+
+namespace std{
+template <>
+struct hash<Bomba::RequestToken> {
+	std::size_t operator()(Bomba::RequestToken token) const {
+		return token.id;
+	}
+};
+} // namespace std
 #endif // BOMBA_CORE

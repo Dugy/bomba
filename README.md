@@ -41,7 +41,7 @@ The networking client throws an exception if the call fails so that an incorrect
 
 It was experimentally determined that an exception adds 5 - 10 microseconds the processing of a request, which does not lead to a drastic slowdown. This choice is based on optimisation for successful calls and the atrocious verbosity of checking error codes after every function call.
 
-Exceptions are always called by functions that throw them and these functions can be replaced if some macros are set. This will not cause stack unwinding and is not debugged or tested yet.
+If there is a very strong reason not to use exceptions, it's intended to be avoidable. Exceptions are always called by functions that throw them and these functions can be replaced if some macros are set. This will not cause stack unwinding and is not debugged or tested yet.
 
 ## Usage
 
@@ -73,12 +73,22 @@ point.deserialise<Bomba::BasicJson<>>(reading);
 ### Remote Procedure Call
 You can define an RPC function by declaring this:
 ```C++
+#include "bomba_rpc_object.hpp"
+//...
+
 Bomba::RpcLambda<[] (std::string newMessage = Bomba::name("message")) {
 	std::cout << newMessage << std::endl;
 }> coutPrinter;
+
+//...
+coutPrinter("Hello warm world!");
 ```
 
-This doesn't work on Clang because it doesn't support lambdas in unevaluated contexts yet. This implements the `IRemoteCallable` interface that can be used both as a client and as a server. If it's used as a client, it behaves like a functor that calls the server's method and returns the result the server has sent. If it's used as a server, it can be called from a client. It is possible to nest these structures:
+Depending on the runtime configuration, this will either call the lambda or send a request to the server, have it run the lambda there, send a response back and return the value output by the server.
+
+It doesn't work on Clang because it doesn't support lambdas in unevaluated contexts yet.
+
+This implements the `IRemoteCallable` interface that can be used both as a client and as a server. If it's used as a client, it behaves like a functor that calls the server's method and returns the result the server has sent. If it's used as a server, it can be called from a client. It is possible to nest these structures:
 ```C++
 #include "bomba_rpc_object.hpp"
 //...
@@ -96,13 +106,28 @@ struct MessageStorage : RpcObject<MessageStorage> {
 
 	RpcMember<[] (std::string newMessage = name("message")) {
 		std::cout << newMessage << std::endl;
-	}> setMessage = child<"cout_print">;
+	}> printMessage = child<"cout_print">;
 };
 ```
 
 If an instance to a parent class is expected as the first argument, it acts like a member function. Otherwise, it is a static function. Both will appear in with the listed names in the parent's namespace in the RPC (e.g. if the parent is accessed as `storage` and the delimeter is a dot, then `setMessage` will be called as `storage.setMessage`).
 
 For the purposes of customisation, you can implement `IRemoteCallable` yourself, but it can be impractical without `RpcLambda` (`RpcMember` inherits from it to allow connecting it to `RpcObject`).
+
+These can be called as follows:
+```C++
+messageStorage.setMessage("Don't forget the keycard");
+messageStorage.printMessage("Do you have the keycard with you?");
+std::string obtained = messageStorage.getMessage();
+```
+
+If the client supports it, these can be non-blocking. It's possible to obtain a `Bomba::Future` object templated to the return type that allows checking if the return value is already available with its `is_ready()` method and obtaining the values (blocking if not ready) with its `get()` method. This should be changed to `std::future` once its expanded version becomes part of the standard.
+```C++
+auto future1 = messageStorage.printMessage.async("Lazy to wait until it's printed");
+auto future2 = messageStorage.getMessage.async();
+std::string message = future2.get();
+future1.get();
+```
 
 ### Servers
 There are multiple ways to implement web servers, depending on the intended functionality
@@ -231,7 +256,7 @@ http.getResponse(identifier, Bomba::makeCallback([](std::span<char> response) {
 }));
 ```
 
-### Calling an RPC method through HTTP
+#### Calling an RPC method through HTTP
 This will call a HTTP method of a [server](#post-only-server).
 ```C++
 #include "bomba_sync_client.hpp"
@@ -250,6 +275,8 @@ Bomba::HttpClient<> http(&client, "0.0.0.0");
 method.setResponder(&http);
 method("A verÿ lông messäge.", 2, true);
 ```
+
+It's possible to use `SyncNetworkClient` for non-blocking calls through the `async()` method. It works by checking what is in the receive buffer, it's not really asynchronous.
 
 ### Custom string type
 If you can't use `std::string` for some reasons (like restrictions regarding dynamic allocation), you can define your own string type (assuming it's called `String`) and serialise JSON as `Bomba::BasicJson<String>`. I recommend aliasing that type with `using`.

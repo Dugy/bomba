@@ -12,13 +12,10 @@ int main(int argc, char** argv) {
 
 	Bomba::SyncNetworkClient client("0.0.0.0", "8080");
 	Bomba::HttpClient<> http(&client, "0.0.0.0");
-	auto identifier = http.get("/");
-	http.getResponse(identifier, Bomba::makeCallback([](std::span<char> response) {
-		std::cout << "Page is:" << std::endl;
-		std::cout << std::string_view(response.data(), response.size()) << std::endl;
-		return true;
-	}));
-
 	method.setResponder(&http);
-	method("A verÿ lông messäge.", 2, true);
+
+	std::string line;
+	while (std::getline(std::cin, line)) {
+		method(line,  1, false);
+	}
 }

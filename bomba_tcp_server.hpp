@@ -44,9 +44,9 @@ class TcpServer {
 				return reaction;
 			}
 			if (reaction == ServerReaction::OK) {
-				if (int(_leftovers.size()) < parsed)
+				if (int(_leftovers.size()) > parsed) {
 					_leftovers = std::vector<char>(_leftovers.begin() + parsed, _leftovers.end());
-				else
+				} else
 					_leftovers.clear();
 			}
 			return reaction;
@@ -74,13 +74,11 @@ class TcpServer {
 		}
 
 		void cancel() { // MUST RETURN AFTER CALLING cancel(), IT DESTROYS this
-//			std::cout << "Disconnected" << std::endl;
 			_socket.close();
 			_parent->destroySession(_index);
 		}
 
 		~Session() {
-//			std::cout << "Destroying session" << std::endl;
 		}
 	};
 
@@ -88,7 +86,6 @@ class TcpServer {
 	std::mutex _sessionsLock;
 
 	void startSession() {
-//		std::cout << "Going to accept" << std::endl;
 		_acceptor.async_accept(_context, [&] (std::error_code error, Net::ip::tcp::socket socket) {
 			if (error) {
 //				std::cout << "Error: " << error.message() << std::endl;
@@ -100,7 +97,6 @@ class TcpServer {
 				_sessions.emplace_back(std::make_unique<Session>(std::move(socket), _responder, this, index));
 				_sessions.back()->readSome();
 			}
-//			std::cout << "Received connection" << std::endl;
 			startSession();
 		});
 	}
@@ -112,7 +108,6 @@ class TcpServer {
 			std::swap(_sessions[index], _sessions.back());
 		}
 		_sessions.pop_back();
-//		std::cout << "Remaining sessions: " << _sessions.size() << std::endl;
 	}
 
 public:

@@ -8,6 +8,7 @@
 #include <experimental/net>
 #include <vector>
 #include <string>
+#include <unordered_map>
 
 namespace Bomba {
 
@@ -15,15 +16,54 @@ namespace Net = std::experimental::net;
 using NetStringView = std::experimental::fundamentals_v1::basic_string_view<char>;
 
 class SyncNetworkClient : public ITcpClient {
-	bool _okay = true;
 	Net::io_context _ioContext;
 	Net::ip::tcp::socket _socket = Net::ip::tcp::socket{_ioContext};
 	Net::ip::tcp::resolver _resolver = Net::ip::tcp::resolver{_ioContext};
 	Net::ip::basic_endpoint<Net::ip::tcp> _server;
-	std::vector<std::vector<char>> _responses;
+	std::unordered_map<RequestToken, std::vector<char>> _responses;
+	std::vector<char> _leftovers;
 	
 	void connect() {
 		_socket.connect(_server);
+	}
+
+	template <bool doWait, typename Reader>
+	void searchRequests(RequestToken tokenSought, Reader&& reader) {
+		// See if some response was already received
+		auto found = _responses.find(tokenSought);
+		if (found != _responses.end()) {
+			auto [reaction, token, position] = reader(found->second, true);
+			if (reaction == ServerReaction::OK || reaction == ServerReaction::DISCONNECT)
+				return;
+			if (reaction == ServerReaction::READ_ON)
+				logicError("First it was WRONG_REPLY, now it is READ_ON?");
+		}
+
+		// Wait for a reply if none was received before
+		std::array<char, 2048> responseBuffer;
+		while (true) {
+			std::error_code error;
+			if constexpr(!doWait) {
+				if (_socket.available() == 0)
+					break;
+			}
+			auto received = _socket.read_some(Net::buffer(responseBuffer), error);
+			if (error) {
+				remoteError(error.message().c_str());
+				break;
+			}
+			_leftovers.insert(_leftovers.end(), responseBuffer.begin(), responseBuffer.begin() + received);
+			while (!_leftovers.empty()) {
+				auto [reaction, tokenReceived, position] = reader(_leftovers, false);
+				if (reaction == ServerReaction::OK || reaction == ServerReaction::DISCONNECT)
+					return;
+				else if (reaction == ServerReaction::WRONG_REPLY) {
+					_responses.insert(std::make_pair(tokenReceived, std::vector<char>(_leftovers.begin(), _leftovers.begin() + position)));
+					if (!_leftovers.empty())
+						_leftovers = std::vector<char>(_leftovers.begin() + position, _leftovers.end());
+				} // else read on
+			}
+		}
 	}
 
 public:
@@ -44,36 +84,12 @@ public:
 					(std::span<char> input, bool identified)>& reader) override {
 		if (!_socket.is_open())
 			connect();
+		searchRequests<true>(token, reader);
+	}
 
-		// See if some response was already received
-		for (auto& response : _responses) {
-			auto [reaction, token, position] = reader(response, true);
-			if (reaction == ServerReaction::OK || reaction == ServerReaction::DISCONNECT)
-				return;
-			if (reaction == ServerReaction::READ_ON)
-				logicError("First it was WRONG_REPLY, now it is READ_ON?");
-		}
-		
-		// Wait for a reply if none was received before
-		std::array<char, 2048> responseBuffer;
-		std::vector<char> leftovers;
-		while (true) {
-			std::error_code error;
-			auto received = _socket.receive(Net::buffer(responseBuffer), error);
-			if (error) {
-				remoteError(error.message().c_str());
-				break;
-			}
-			leftovers.insert(leftovers.end(), responseBuffer.begin(), responseBuffer.begin() + received);
-			auto [reaction, token, position] = reader(leftovers, true);
-			if (reaction == ServerReaction::OK || reaction == ServerReaction::DISCONNECT)
-				return;
-			else if (reaction == ServerReaction::WRONG_REPLY) {
-				_responses.emplace_back(std::vector<char>(leftovers.begin(), leftovers.begin() + position));
-				if (!leftovers.empty())
-					leftovers = std::vector<char>(leftovers.begin() + position, leftovers.end());
-			} // else read on
-		}
+	void tryToGetResponse(RequestToken token, const Callback<std::tuple<ServerReaction, RequestToken, int64_t>
+					(std::span<char> input, bool identified)>& reader) override {
+		searchRequests<false>(token, reader);
 	}
 };
 

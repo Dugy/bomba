@@ -654,7 +654,9 @@ int main(int argc, char** argv) {
 
 		http.written.clear();
 		http.toReturn = advancedRpcResponse2;
-		doATest(advancedRpc.getMessage(), "Flag");
+		auto future = advancedRpc.getMessage.async();
+		doATest(future.is_ready(), true);
+		doATest(future.get(), "Flag");
 		doATest(http.written, advancedRpcRequest2);
 
 		http.written.clear();
@@ -689,7 +691,8 @@ int main(int argc, char** argv) {
 			client.response = replyToGet.substr(0, std::min<int>(step, replyToGet.size()));
 			step++;
 		};
-		http.getResponse(token, Bomba::makeCallback( [&] (std::span<char> response) {
+		http.getResponse(token, Bomba::makeCallback( [&] (std::span<char> response, bool success) {
+			doATest(success, true);
 			downloaded = std::string_view(response.data(), response.size());
 			return true;
 		}));
@@ -756,7 +759,8 @@ R"~(<!doctype html>
 		client.response = sentHtml;
 		
 		std::string downloaded;
-		http.getResponse(token, Bomba::makeCallback( [&] (std::span<char> response) {
+		http.getResponse(token, Bomba::makeCallback( [&] (std::span<char> response, bool success) {
+			doATest(success, true);
 			downloaded = std::string_view(response.data(), response.size());
 			return true;
 		}));
@@ -824,12 +828,31 @@ R"~(<!doctype html>
 		std::cout << "Testing HTTP loop on localhost" << std::endl;
 		auto fixture = makeHttpTestFixture();
 		auto response = fixture.httpClient.get("/");
-		fixture.httpClient.getResponse(response, Bomba::makeCallback([&](std::span<char> response) {
+		fixture.httpClient.getResponse(response, Bomba::makeCallback([&](std::span<char> response, bool) {
 			doATest(someHtml, std::string_view(response.data(), response.size()));
 			return true;
 		}));
 		fixture.methodClient("We are so woke");
 		doATest(rpcTestAssigned, "We are so woke");
+		
+		auto future = fixture.methodClient.async("We fear the needle");
+		while (!future.is_ready()) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		doATest(rpcTestAssigned, "We fear the needle");
+	}
+	
+	{
+		std::cout << "Testing HTTP out of order" << std::endl;
+		auto fixture = makeHttpTestFixture();
+		
+		auto future1 = fixture.methodClient.async("We fear microchips");
+		auto future2 = fixture.methodClient.async("We fear the politicians");
+		auto future3 = fixture.methodClient.async("We fear the 5G");
+		// Should not throw exceptions
+		future3.get();
+		future2.get();
+		future1.get();
 	}
 	
 	{
@@ -837,7 +860,7 @@ R"~(<!doctype html>
 		auto fixture = makeHttpTestFixture();
 		for (int i = 0; i < 2000; i++) {
 			auto response = fixture.httpClient.get("/");
-			fixture.httpClient.getResponse(response, Bomba::makeCallback([&](std::span<char>) {
+			fixture.httpClient.getResponse(response, Bomba::makeCallback([&](std::span<char>, bool) {
 				return true;
 			}));
 		}

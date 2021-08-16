@@ -37,7 +37,7 @@ class CachingFileServer {
 		}
 	}
 	void cacheFile(const std::filesystem::path& path, std::string_view localPath) {
-		if (localPath == "/index.html") [[unlikely]]
+		if (localPath == "/index.html")
 			cacheFile(path, "/");
 		std::string extension = path.extension().string();
 		for (char& c : extension)
