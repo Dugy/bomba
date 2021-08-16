@@ -85,8 +85,8 @@ struct DummyRpcClass : IRemoteCallable {
 	DummyRpcClass* backup = nullptr;
 	
 	struct : IRemoteCallable {
-		bool call(IStructuredInput* arguments, IStructuredOutput& result, const Callback<>& introduceResult,
-				const Callback<>&, std::optional<UserId>) const final override {
+		bool call(IStructuredInput* arguments, IStructuredOutput& result, Callback<> introduceResult,
+				Callback<>, std::optional<UserId>) const final override {
 			if (arguments) {
 				arguments->startReadingObject(noFlags);
 				arguments->endReadingObject(noFlags);
@@ -97,23 +97,22 @@ struct DummyRpcClass : IRemoteCallable {
 		}
 		std::string operator()() const {
 			IRpcResponder* responder = getResponder();
-			auto token = responder->send(UserId{}, this, makeCallback(
-						[] (IStructuredOutput& out, RequestToken) {
+			auto token = responder->send(UserId{}, this, [] (IStructuredOutput& out, RequestToken) {
 				out.startWritingObject(noFlags, 0);
 				out.endWritingObject(noFlags);
-			}));
+			});
 			
 			std::string returned;
-			responder->getResponse(token, makeCallback([&] (IStructuredInput& response) {
+			responder->getResponse(token, [&] (IStructuredInput& response) {
 				returned = response.readString(noFlags);
-			}));
+			});
 			return returned;
 		}
 		using IRemoteCallable::IRemoteCallable;
 	} getMessage = this;
 	struct : IRemoteCallable {
-		bool call(IStructuredInput* arguments, IStructuredOutput& result, const Callback<>& introduceResult,
-				const Callback<>& introduceError, std::optional<UserId>) const final override {
+		bool call(IStructuredInput* arguments, IStructuredOutput& result, Callback<> introduceResult,
+				Callback<> introduceError, std::optional<UserId>) const final override {
 			if (!arguments) {
 				methodNotFoundError("Expected params");
 				return false;
@@ -138,17 +137,16 @@ struct DummyRpcClass : IRemoteCallable {
 		}
 		void operator()(int newTime) {
 			IRpcResponder* responder = getResponder();
-			auto token = responder->send(UserId{}, this, makeCallback(
-						[newTime] (IStructuredOutput& out, RequestToken) {
+			auto token = responder->send(UserId{}, this, [newTime] (IStructuredOutput& out, RequestToken) {
 				out.startWritingObject(noFlags, 1);
 				out.introduceObjectMember(noFlags, "new_time", 0);
 				out.writeInt(noFlags, newTime);
 				out.endWritingObject(noFlags);
-			}));
+			});
 			
-			responder->getResponse(token, makeCallback([&] (IStructuredInput& response) {
+			responder->getResponse(token, [&] (IStructuredInput& response) {
 				response.readNull(noFlags);
-			}));
+			});
 		}
 		using IRemoteCallable::IRemoteCallable;
 	} setTime = this;
@@ -226,8 +224,8 @@ struct FakeClient : ITcpClient {
 	void writeRequest(std::span<char> written) override {
 		request = std::string_view(written.data(), written.size());
 	}
-	void getResponse(RequestToken, const Callback<std::tuple<ServerReaction, RequestToken, int64_t>
-					 (std::span<char> input, bool identified)>& reader) override {
+	void getResponse(RequestToken, Callback<std::tuple<ServerReaction, RequestToken, int64_t>
+					 (std::span<char> input, bool identified)> reader) override {
 		if (expandResponse)
 			expandResponse();
 		auto [reactionObtained, token, positionObtained] = reader(std::span<char>(response.begin(), response.size()), true);
@@ -243,9 +241,9 @@ struct FakeServer {
 		auto session = responder->getSession();
 		std::string response;
 		ServerReaction result = session.respond(std::span<char>(request.data(), request.size()),
-						makeCallback([&] (std::span<const char> output) {
+						[&] (std::span<const char> output) {
 				response = std::string_view(output.data(), output.size());
-		})).first;
+		}).first;
 		return {response, result};
 	}
 };
@@ -539,25 +537,24 @@ int main(int argc, char** argv) {
 		dummyRpc.message = "nevermind";
 		dummyRpcBackup.message = "actually...";
 		std::string result;
-		auto goodCallback = makeCallback([] (std::string_view) {});
-		auto badCallback = makeCallback([] {});
+		auto goodCallback = [] (std::string_view) {};
 		JsonRpcServerProtocol protocol = &dummyRpc;
-		protocol.post("", "application/json", dummyRpcRequest1, result, goodCallback, badCallback);
+		protocol.post("", "application/json", dummyRpcRequest1, result, goodCallback, {});
 		doATest(result, dummyRpcReply1);
 		
 		result.clear();
-		protocol.post("", "application/json", dummyRpcRequest2, result, goodCallback, badCallback);
+		protocol.post("", "application/json", dummyRpcRequest2, result, goodCallback, {});
 		doATest(result, dummyRpcReply2);
 		doATest(dummyRpc.time, 1366);
 		
 		dummyRpc.time = 1200;
 		result.clear();
-		protocol.post("", "application/json", dummyRpcRequest3, result, goodCallback, badCallback);
+		protocol.post("", "application/json", dummyRpcRequest3, result, goodCallback, {});
 		doATest(result, dummyRpcReply3);
 		doATest(dummyRpc.time, 1366);
 		
 		result.clear();
-		protocol.post("", "application/json", dummyRpcRequest4, result, goodCallback, badCallback);
+		protocol.post("", "application/json", dummyRpcRequest4, result, goodCallback, {});
 		doATest(result, dummyRpcReply4);
 	}
 	
@@ -634,8 +631,8 @@ int main(int argc, char** argv) {
 		std::cout << "Testing RPC object" << std::endl;
 		AdvancedRpcClass advancedRpc;
 		std::string result;
-		auto goodCallback = Bomba::makeCallback([] (std::string_view) {});
-		auto badCallback = Bomba::makeCallback([] {});
+		auto goodCallback = [] (std::string_view) {};
+		auto badCallback = [] {};
 		Bomba::JsonRpcServerProtocol protocol = &advancedRpc;
 		protocol.post("", "application/json", advancedRpcRequest1, result, goodCallback, badCallback);
 		doATest(result, advancedRpcResponse1);
@@ -691,11 +688,11 @@ int main(int argc, char** argv) {
 			client.response = replyToGet.substr(0, std::min<int>(step, replyToGet.size()));
 			step++;
 		};
-		http.getResponse(token, Bomba::makeCallback( [&] (std::span<char> response, bool success) {
+		http.getResponse(token, [&] (std::span<char> response, bool success) {
 			doATest(success, true);
 			downloaded = std::string_view(response.data(), response.size());
 			return true;
-		}));
+		});
 		doATest(downloaded, "Blablabla");
 		doATest(int(client.reaction), int(ServerReaction::OK));
 	}
@@ -759,11 +756,11 @@ R"~(<!doctype html>
 		client.response = sentHtml;
 		
 		std::string downloaded;
-		http.getResponse(token, Bomba::makeCallback( [&] (std::span<char> response, bool success) {
+		http.getResponse(token, [&] (std::span<char> response, bool success) {
 			doATest(success, true);
 			downloaded = std::string_view(response.data(), response.size());
 			return true;
-		}));
+		});
 		doATest(someHtml, downloaded);
 
 		rpcTestAssigned.clear();
@@ -828,10 +825,10 @@ R"~(<!doctype html>
 		std::cout << "Testing HTTP loop on localhost" << std::endl;
 		auto fixture = makeHttpTestFixture();
 		auto response = fixture.httpClient.get("/");
-		fixture.httpClient.getResponse(response, Bomba::makeCallback([&](std::span<char> response, bool) {
+		fixture.httpClient.getResponse(response, [&] (std::span<char> response, bool) {
 			doATest(someHtml, std::string_view(response.data(), response.size()));
 			return true;
-		}));
+		});
 		fixture.methodClient("We are so woke");
 		doATest(rpcTestAssigned, "We are so woke");
 		
@@ -860,9 +857,9 @@ R"~(<!doctype html>
 		auto fixture = makeHttpTestFixture();
 		for (int i = 0; i < 2000; i++) {
 			auto response = fixture.httpClient.get("/");
-			fixture.httpClient.getResponse(response, Bomba::makeCallback([&](std::span<char>, bool) {
+			fixture.httpClient.getResponse(response, [&] (std::span<char>, bool) {
 				return true;
-			}));
+			});
 		}
 		std::cout << " average response time is " << fixture.server.averageResponseTime().count() << " ns" << std::endl;
 	}

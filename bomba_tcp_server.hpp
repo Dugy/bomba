@@ -36,9 +36,9 @@ class TcpServer {
 			: _socket(std::move(socket)), _responder(responder->getSession()), _parent(parent), _index(index) { }
 
 		ServerReaction readLeftovers() {
-			auto [reaction, parsed] = _responder.respond(_leftovers, makeCallback([this] (std::span<const char> output) {
+			auto [reaction, parsed] = _responder.respond(_leftovers, [this] (std::span<const char> output) {
 				_socket.send(Net::buffer(output.data(), output.size()));
-			}));
+			});
 			if (reaction == ServerReaction::DISCONNECT) {
 				cancel();
 				return reaction;

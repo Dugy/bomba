@@ -68,7 +68,7 @@ struct IResponseReader {
 
 	using ChildGettingFunction = IRemoteCallable* (*)(const IRemoteCallable* self, int offset, std::string_view name);
 	using ChildNameGettingFunction = bool (*)(const IRemoteCallable* self, int offset, const IRemoteCallable* child,
-			const Callback<void(std::string_view)>& reaction);
+			Callback<void(std::string_view)> reaction);
 
 #ifdef NO_DEFECT_REPORT_2118
 	struct ChildRpcEntry {
@@ -137,7 +137,7 @@ struct IResponseReader {
 
 	template <typename Parent, int Index = 0, typename SFIANE = void>
 	struct ChildAccess {
-		static void name(const IRemoteCallable* parent, const IRemoteCallable* child, const Callback<void(std::string_view)>& reaction) {
+		static void name(const IRemoteCallable* parent, const IRemoteCallable* child, Callback<void(std::string_view)> reaction) {
 			logicError("Broken structure");
 		}
 		static IRemoteCallable* instance(const IRemoteCallable* parent, std::string_view name) {
@@ -149,7 +149,7 @@ struct IResponseReader {
 	struct ChildAccess<Parent, Index, std::enable_if_t<
 				std::is_same_v<bool, decltype(boolIfDeclared(SubclassAccess<Parent, Index>()))>>> {
 		constexpr static SubclassAccess<Parent, Index> accessor = {};
-		static void name(const IRemoteCallable* parent, const IRemoteCallable* child, const Callback<void(std::string_view)>& reaction) {
+		static void name(const IRemoteCallable* parent, const IRemoteCallable* child, Callback<void(std::string_view)> reaction) {
 			int offset = childOffset(accessor);
 			if (!childNameGetter(accessor)(parent, offset, child, reaction)) {
 				ChildAccess<Parent, Index + 1>::name(parent, child, reaction);
@@ -338,8 +338,8 @@ namespace Detail {
 			}
 		}
 
-		bool call(IStructuredInput* arguments, IStructuredOutput& result, const Callback<>& introduceResult,
-				const Callback<>&, std::optional<UserId>) const final override {
+		bool call(IStructuredInput* arguments, IStructuredOutput& result, Callback<> introduceResult,
+				Callback<>, std::optional<UserId>) const final override {
 			ArgsTuple input;
 			if constexpr(usesParent()) {
 				std::get<0>(input) = static_cast<FirstArg>(parent());
@@ -392,28 +392,27 @@ namespace Detail {
 
 		Returned readResponse(IRpcResponder* responder, RequestToken token) const override {
 			if constexpr(std::is_void_v<Returned>) {
-				responder->getResponse(token, makeCallback([&](IStructuredInput& in) {
+				responder->getResponse(token, [&](IStructuredInput& in) {
 					in.readNull(Flags);
-				}));
+				});
 			} else {
 				Returned result;
-				responder->getResponse(token, makeCallback([&](IStructuredInput& in) {
+				responder->getResponse(token, [&](IStructuredInput& in) {
 					deserialiseMember(in, result, Flags);
-				}));
+				});
 				return result;
 			}
 		}
 
 		template <typename... AnyArgs>
 		RequestToken sendRequest(IRpcResponder* responder, AnyArgs&&... args) const {
-			return responder->send({}, this, makeCallback(
-					[&](IStructuredOutput& out, RequestToken) {
+			return responder->send({}, this, [&] (IStructuredOutput& out, RequestToken) {
 				out.startWritingObject(Flags, argumentInfoSize);
 				if constexpr(!std::is_void_v<FirstArg>) {
 					remoteCallHelper(out, std::forward<AnyArgs>(args)...);
 				}
 				out.endWritingObject(Flags);
-			}));
+			});
 		}
 
 		template <typename... AnyArgs>
@@ -571,9 +570,9 @@ protected:
 #ifdef NO_DEFECT_REPORT_2118
 		for (auto& it : childEntries) {
 			std::string_view nameObtained;
-			if (it.childNameGettingFunction(this, it.offset, child, makeCallback([&] (std::string_view name) {
+			if (it.childNameGettingFunction(this, it.offset, child, [&] (std::string_view name) {
 				nameObtained = name;
-			}))) {
+			})) {
 				return nameObtained;
 			}
 		}
@@ -581,9 +580,9 @@ protected:
 		return "";
 #else
 		std::string_view result;
-		Detail::ChildAccess<Derived>::name(this, child, makeCallback([&](std::string_view name) {
+		Detail::ChildAccess<Derived>::name(this, child, [&](std::string_view name) {
 			result = name;
-		}));
+		});
 		return result;
 #endif
 	}
@@ -640,8 +639,8 @@ private:
 		return reinterpret_cast<IRemoteCallable*>(reinterpret_cast<intptr_t>(parent) + offset);
 	};
 	template <StringLiteral Name>
-	constexpr static Detail::ChildNameGettingFunction childNameGetter = [] (const IRemoteCallable* parent, int offset, const IRemoteCallable* child,
-			const Callback<void(std::string_view)>& actionIfReal) {
+	constexpr static Detail::ChildNameGettingFunction childNameGetter = [] (const IRemoteCallable* parent, int offset,
+			const IRemoteCallable* child, Callback<void(std::string_view)> actionIfReal) {
 		if (reinterpret_cast<intptr_t>(parent) + offset == reinterpret_cast<intptr_t>(child)) {
 			actionIfReal(Name);
 			return true;

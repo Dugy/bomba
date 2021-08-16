@@ -28,7 +28,7 @@ public:
 
 	template <AssembledString ResponseStringType = StringType>
 	bool post(std::string_view, std::string_view contentType, std::string_view request, ResponseStringType& _response,
-				Callback<void(std::string_view)>& goodCallback, Callback<void()>& badCallback) {
+				Callback<void(std::string_view)> goodCallback, Callback<void()> badCallback) {
 		if (contentType != "application/json") {
 			badCallback();
 			return false;
@@ -47,14 +47,14 @@ public:
 		int index = 1;
 		const IRemoteCallable* method = nullptr;
 		bool called = false;
-		auto introduceError = makeCallback([&] () {
+		auto introduceError = [&] () {
 			output.introduceObjectMember(noFlags, "error", index++);
-		});
+		};
 		auto call = [&] (typename BasicJson<StringType>::Input* input) {
 			try {
-				auto introduceResult = makeCallback([&] () {
+				auto introduceResult = [&] () {
 					output.introduceObjectMember(noFlags, "result", index++);
-				});
+				};
 				if (method) [[likely]] {
 					method->call(input, output, introduceResult, introduceError);
 					called = true;
@@ -136,7 +136,7 @@ class JsonRpcClientProtocol : private IRpcResponder {
 public:
 	
 	RequestToken send(UserId user, const IRemoteCallable* method,
-				const Callback<void(IStructuredOutput&, RequestToken token)>& request) final override {
+				Callback<void(IStructuredOutput&, RequestToken token)> request) final override {
 		auto methodName = PathWithSeparator<".", StringType>::constructPath(method);
 		return _upper->post(UserId{}, [methodName, &request]
 					(typename HttpType::StringType& output, RequestToken token) {
@@ -149,11 +149,11 @@ public:
 			writer.introduceObjectMember(noFlags, "method", 2);
 			writer.writeString(noFlags, methodName);
 			writer.introduceObjectMember(noFlags, "params", 3);
-			request(writer, std::move(token));
+			request(writer, token);
 			writer.endWritingObject(noFlags);
 		});
 	}
-	bool getResponse(RequestToken token, const Callback<void(IStructuredInput&)>& reader) final override {
+	bool getResponse(RequestToken token, Callback<void(IStructuredInput&)> reader) final override {
 		bool retval = false;
 		_upper->getResponse(token, [&reader, &retval, token] (std::string_view unparsed) {
 			typename BasicJson<StringType>::Input input(unparsed);

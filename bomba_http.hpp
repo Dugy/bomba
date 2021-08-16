@@ -418,7 +418,7 @@ concept HttpPostResponder = requires(T value, std::string_view input, std::span<
 
 struct DummyGetResponder {
 	template <AssembledString ResponseStringType = std::string>
-	static bool get(std::string_view, const Callback<ResponseStringType&(std::string_view)>&) {
+	static bool get(std::string_view, Callback<ResponseStringType&(std::string_view)>) {
 		return false;
 	}
 };
@@ -465,11 +465,11 @@ struct DownloadIfFilePresent {
 		if (method) {
 			if (fileFound) {
 				NullStructredOutput nullResponse;
-				method->call(args, nullResponse, makeCallback([] {}), makeCallback([] {}));
+				method->call(args, nullResponse, [] {}, [] {});
 			} else {
 				AssembledStringType& output = outputProvider(name);
 				OutputFormat response(output);
-				method->call(args, response, makeCallback([] {}), makeCallback([] {}));
+				method->call(args, response, [] {}, [] {});
 			}
 			return true;
 		} else return fileFound;
@@ -533,7 +533,7 @@ public:
 			return false;
 		typename HtmlMessageEncoding<ResponseStringType>::Input input = {std::string_view(request.data(), request.size())};
 		NullStructredOutput nullOutput;
-		method->call(&input, nullOutput, makeCallback([] {}), makeCallback([] {}));
+		method->call(&input, nullOutput, [] {}, [] {});
 		return true;
 	}
 };
@@ -565,7 +565,7 @@ public:
 		Detail::HttpParseState _state;
 	public:
 		std::pair<ServerReaction, int64_t> respond(
-					std::span<char> input, const Callback<void(std::span<const char>)>& writer) override {
+					std::span<char> input, Callback<void(std::span<const char>)> writer) override {
 			auto firstLineReader = [&] (std::span<char> input, int size) {
 				int separator1 = 0;
 				while (input[separator1] != ' ' && separator1 < size)
@@ -712,17 +712,17 @@ class HttpClient : public IRpcResponder {
 	std::string_view _virtualHost;
 
 	RequestToken send(UserId, const IRemoteCallable* method,
-			const Callback<void(IStructuredOutput&, RequestToken)>& request) override {
+			Callback<void(IStructuredOutput&, RequestToken)> request) override {
 		auto methodName = PathWithSeparator<"/", StringT>::constructPath(method);
 
 		return send("application/x-www-form-urlencoded",
-					makeCallback([methodName, &request]	(StringT& output, RequestToken token) {
+					[methodName, &request] (StringT& output, RequestToken token) {
 			typename HtmlMessageEncoding<StringT>::Output writer = output;
-			request(writer, std::move(token));
-		}));
+			request(writer, token);
+		});
 	}
-	bool getResponse(RequestToken token, const Callback<void(IStructuredInput&)>& reader) override {
-		getResponse(token, makeCallback([&] (std::span<char> data, bool success) {
+	bool getResponse(RequestToken token, Callback<void(IStructuredInput&)> reader) override {
+		getResponse(token, [&] (std::span<char> data, bool success) {
 			if (!success) {
 				remoteError("Server did not respond with OK");
 				return false;
@@ -730,16 +730,16 @@ class HttpClient : public IRpcResponder {
 			typename HtmlMessageEncoding<StringT>::Input input = {std::string_view(data.data(), data.size())};
 			reader(input);
 			return true;
-		}));
+		});
 		return true;
 	}
 
 	bool hasResponse(RequestToken token) override {
 		bool has = false;
-		getResponse(token, makeCallback([&] (std::span<char> data, bool) {
+		getResponse(token, [&] (std::span<char> data, bool) {
 			has = true;
 			return true;
-		}));
+		});
 		return has;
 	}
 
@@ -748,7 +748,7 @@ public:
 	HttpClient(ITcpClient* client, std::string_view virtualHost) : _client(client), _virtualHost(virtualHost) {}
 
 	RequestToken send(std::string_view contentType,
-			const Callback<void(StringType&, RequestToken token)>& request) {
+			Callback<void(StringType&, RequestToken token)> request) {
 		StringType written;
 		constexpr char correctIntro[] = "POST / HTTP/1.1\r\nContent-Length: ";
 		constexpr char unsetSize[] = "0         ";
@@ -785,7 +785,7 @@ public:
 		return _lastTokenWritten;
 	}
 
-	void getResponse(RequestToken token, const Callback<bool(std::span<char> message, bool success)>& reader) {
+	void getResponse(RequestToken token, Callback<bool(std::span<char> message, bool success)> reader) {
 		bool obtained = false;
 		while (!obtained) {
 			int resultCode = 0;
@@ -801,7 +801,7 @@ public:
 				return true;
 			};
 			Detail::HttpParseState state;
-			_client->getResponse(token, makeCallback([&, this] (std::span<char> input, bool identified)
+			_client->getResponse(token, [&, this] (std::span<char> input, bool identified)
 						-> std::tuple<ServerReaction, RequestToken, int64_t> {
 				// Locate the header's span
 				if (state.bodySize == -1) {
@@ -829,7 +829,7 @@ public:
 				if (!identified)
 					_lastTokenRead.id++;
 				return {ServerReaction::OK, _lastTokenRead, state.transition + state.bodySize};
-			}));
+			});
 		}
 	}
 };

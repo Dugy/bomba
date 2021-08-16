@@ -80,15 +80,15 @@ public:
 		}
 	}
 	
-	void getResponse(RequestToken token, const Callback<std::tuple<ServerReaction, RequestToken, int64_t>
-					(std::span<char> input, bool identified)>& reader) override {
+	void getResponse(RequestToken token, Callback<std::tuple<ServerReaction, RequestToken, int64_t>
+					(std::span<char> input, bool identified)> reader) override {
 		if (!_socket.is_open())
 			connect();
 		searchRequests<true>(token, reader);
 	}
 
-	void tryToGetResponse(RequestToken token, const Callback<std::tuple<ServerReaction, RequestToken, int64_t>
-					(std::span<char> input, bool identified)>& reader) override {
+	void tryToGetResponse(RequestToken token, Callback<std::tuple<ServerReaction, RequestToken, int64_t>
+					(std::span<char> input, bool identified)> reader) override {
 		searchRequests<false>(token, reader);
 	}
 };

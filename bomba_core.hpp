@@ -45,31 +45,28 @@ struct Callback {
 	static_assert(std::is_same_v<T, T>, "Invalid callback signature");
 };
 
-template <typename Returned, typename... Args>
-struct Callback<Returned(Args...)> {
-	virtual Returned operator() (Args&&... args) const = 0;
+template <typename Functor, typename Returned, typename... Args>
+concept FunctorForCallbackConstruction = requires(const Functor& functor, const Args&... args) {
+	{ functor(args...) } -> std::same_as<Returned>;
 };
 
-namespace Detail {
+template <typename Returned, typename... Args>
+class Callback<Returned(Args...)> {
+	void* closure = nullptr;
+	Returned (*typeErased)(void*, const Args&...) = [] (void*, const Args&...) {};
+public:
+	Returned operator() (const Args&... args) const {
+		return typeErased(closure, args...);
+	}
 
-template <typename Returned, typename Class, typename... Args>
-auto makeCallbackHelper(Class&& instance, Returned (Class::*)(Args...) const) {
-	struct CallbackImpl : Callback<Returned(Args...)> {
-		Class instance;
-		CallbackImpl(Class&& instance) : instance(std::forward<Class>(instance)) {}
-		Returned operator() (Args&&... args) const final override {
-			return instance(std::forward<Args>(args)...);
-		}
-	} retval = std::move(instance);
-	return retval;
-}
-
-} // namespace Detail
-
-template <typename T>
-auto makeCallback(T&& func) {
-	return Detail::makeCallbackHelper(std::forward<T>(func), &T::operator());
-}
+	Callback() = default;
+	template <FunctorForCallbackConstruction<Returned, Args...> T>
+	Callback(const T& lambda)
+			: closure(reinterpret_cast<void*>(const_cast<T*>(&lambda)))
+			, typeErased([] (void* closure, const Args&... args) {
+		return reinterpret_cast<T*>(closure)->operator()(args...);
+	}) {}
+};
 
 template <typename Resource, typename Destruction>
 auto makeRaiiContainer(Resource&& resource, Destruction&& destruction) {
@@ -299,8 +296,8 @@ struct RequestToken {
 
 struct IRpcResponder {
 	virtual RequestToken send(UserId user, const IRemoteCallable* method,
-			const Callback<void(IStructuredOutput&, RequestToken)>& request) = 0;
-	virtual bool getResponse(RequestToken token, const Callback<void(IStructuredInput&)>& reader) = 0;
+			Callback<void(IStructuredOutput&, RequestToken)> request) = 0;
+	virtual bool getResponse(RequestToken token, Callback<void(IStructuredInput&)> reader) = 0;
 	virtual bool hasResponse(RequestToken) {
 		return true; // If not sufficiently async, it's sort of always available and getting it causes it to wait
 	}
@@ -338,8 +335,8 @@ public:
 		_responder = responder;
 	}
 	
-	virtual bool call(IStructuredInput* arguments, IStructuredOutput& result, const Callback<>& introduceResult,
-			const Callback<>& introduceError, std::optional<UserId> user = std::nullopt) const {
+	virtual bool call(IStructuredInput* arguments, IStructuredOutput& result, Callback<> introduceResult,
+			Callback<> introduceError, std::optional<UserId> user = std::nullopt) const {
 		return false;
 	}
 	virtual const IRemoteCallable* getChild(std::string_view name) const {
@@ -408,17 +405,17 @@ enum class ServerReaction {
 
 struct ITcpClient {
 	virtual void writeRequest(std::span<char> written) = 0;
-	virtual void getResponse(RequestToken token, const Callback<std::tuple<ServerReaction, RequestToken, int64_t>
-			(std::span<char> input, bool identified)>& reader) = 0;
-	virtual void tryToGetResponse(RequestToken token, const Callback<std::tuple<ServerReaction, RequestToken, int64_t>
-			(std::span<char> input, bool identified)>& reader) {
+	virtual void getResponse(RequestToken token, Callback<std::tuple<ServerReaction, RequestToken, int64_t>
+			(std::span<char> input, bool identified)> reader) = 0;
+	virtual void tryToGetResponse(RequestToken token, Callback<std::tuple<ServerReaction, RequestToken, int64_t>
+			(std::span<char> input, bool identified)> reader) {
 		getResponse(token, reader);
 	}
 };
 
 struct ITcpResponder {
 	virtual std::pair<ServerReaction, int64_t> respond(
-				std::span<char> input, const Callback<void(std::span<const char>)>& writer) = 0;
+				std::span<char> input, Callback<void(std::span<const char>)> writer) = 0;
 };
 
 // Matching types to the interface
