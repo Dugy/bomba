@@ -41,7 +41,8 @@ class SyncNetworkClient : public ITcpClient {
 
 		// Wait for a reply if none was received before
 		std::array<char, 2048> responseBuffer;
-		while (true) {
+		bool wasReceived = false;
+		while (!wasReceived) {
 			std::error_code error;
 			if constexpr(!doWait) {
 				if (_socket.available() == 0)
@@ -55,13 +56,14 @@ class SyncNetworkClient : public ITcpClient {
 			_leftovers.insert(_leftovers.end(), responseBuffer.begin(), responseBuffer.begin() + received);
 			while (!_leftovers.empty()) {
 				auto [reaction, tokenReceived, position] = reader(_leftovers, false);
-				if (reaction == ServerReaction::OK || reaction == ServerReaction::DISCONNECT)
+				if (reaction == ServerReaction::OK)
+					wasReceived = true;
+				else if (reaction == ServerReaction::DISCONNECT || reaction == ServerReaction::READ_ON) {
 					return;
-				else if (reaction == ServerReaction::WRONG_REPLY) {
+				} else if (reaction == ServerReaction::WRONG_REPLY) {
 					_responses.insert(std::make_pair(tokenReceived, std::vector<char>(_leftovers.begin(), _leftovers.begin() + position)));
-					if (!_leftovers.empty())
-						_leftovers = std::vector<char>(_leftovers.begin() + position, _leftovers.end());
 				} // else read on
+				_leftovers = std::vector<char>(_leftovers.begin() + position, _leftovers.end());
 			}
 		}
 	}

@@ -416,21 +416,21 @@ concept HttpPostResponder = requires(T value, std::string_view input, std::span<
 	{ value.post(input, input, body, writer) } -> std::same_as<bool>;
 };
 
-struct DummyGetResponder {
-	template <AssembledString ResponseStringType = std::string>
-	static bool get(std::string_view, Callback<ResponseStringType&(std::string_view)>) {
-		return false;
-	}
-};
-
 template <typename T>
-concept HttpWriteStarter = requires(T value, std::string_view streamType) {
+concept HttpWriteStarter = requires(const T& value, std::string_view streamType) {
 	{ value(streamType) } -> AssembledString;
 };
 
 template <typename T, typename WriteStarter>
 concept HttpFileGetterCallback = requires(T value, WriteStarter starter) {
 	{ value(starter) } -> std::same_as<bool>;
+};
+
+struct DummyGetResponder {
+	template <HttpWriteStarter WriteStarter>
+	static bool get(std::string_view, const WriteStarter&) {
+		return false;
+	}
 };
 
 struct SimpleGetResponder {
@@ -465,11 +465,11 @@ struct DownloadIfFilePresent {
 		if (method) {
 			if (fileFound) {
 				NullStructredOutput nullResponse;
-				method->call(args, nullResponse, [] {}, [] {});
+				method->call(args, nullResponse, {}, {});
 			} else {
 				AssembledStringType& output = outputProvider(name);
 				OutputFormat response(output);
-				method->call(args, response, [] {}, [] {});
+				method->call(args, response, {}, {});
 			}
 			return true;
 		} else return fileFound;
@@ -524,8 +524,7 @@ public:
 	HtmlPostResponder(IRemoteCallable* callable) : _callable(callable) {}
 
 	template <HttpWriteStarter WriteStarter>
-	bool post(std::string_view path, std::string_view, std::span<char> request,
-				WriteStarter) {
+	bool post(std::string_view path, std::string_view, std::span<char> request, const WriteStarter&) {
 		std::string_view editedPath = path.substr(1);
 		using ResponseStringType = std::remove_reference_t<decltype(std::declval<WriteStarter>()(std::string_view("")))>;
 		const IRemoteCallable* method = PathWithSeparator<"/", ResponseStringType>::findCallable(editedPath, _callable);
@@ -533,7 +532,7 @@ public:
 			return false;
 		typename HtmlMessageEncoding<ResponseStringType>::Input input = {std::string_view(request.data(), request.size())};
 		NullStructredOutput nullOutput;
-		method->call(&input, nullOutput, [] {}, [] {});
+		method->call(&input, nullOutput, {}, {});
 		return true;
 	}
 };
@@ -647,27 +646,30 @@ public:
 					if (_requestType == GET_REQUEST) {
 						success = _responders.getResponder->get(path, correctResponseWriter);
 						if (!success) [[unlikely]] {
-								response +=
-										"HTTP/1.1 404 Not Found\r\n"
-										"Content-Length: 73\r\n\r\n"
-										"<!doctype html><html lang=en><title>Error 404: Resource not found</title>";
+							constexpr std::string_view errorMessage =
+									"HTTP/1.1 404 Not Found\r\n"
+									"Content-Length: 73\r\n\r\n"
+									"<!doctype html><html lang=en><title>Error 404: Resource not found</title>";
+							writer(std::span<const char>(errorMessage.begin(), errorMessage.size()));
 						}
 					} else {
 						std::span<char> body = {input.begin() + _state.transition, input.begin() + _state.transition + _state.bodySize};
 						std::string_view contentType = {input.data() + _contentType.first, size_t(_contentType.second)};
 						success = _responders.postResponder->post(path, contentType, body, correctResponseWriter);
 						if (!success) [[unlikely]] {
-							response +=
+							constexpr std::string_view errorMessage =
 									"HTTP/1.1 400 Bad Request\r\n"
 									"Content-Length: 66\r\n\r\n"
 									"<!doctype html><html lang=en><title>Error 400: Bad request</title>";
+							writer(std::span<const char>(errorMessage.begin(), errorMessage.size()));
 						}
 					}
 				} catch (...) {
-					response +=
+					constexpr std::string_view errorMessage =
 							"HTTP/1.1 500 Internal Server Error\r\n"
 							"Content-Length: 76\r\n\r\n"
 							"<!doctype html><html lang=en><title>Error 500: Internal server error</title>";
+					writer(std::span<const char>(errorMessage.begin(), errorMessage.size()));
 				}
 				if (success) {
 					if (startedResponse) {
@@ -676,12 +678,13 @@ public:
 						std::to_chars(const_cast<char*>(&responseView[sizeof(correctIntro)]),
 								const_cast<char*>(&responseView[sizeof(correctIntro) + sizeof(unsetSize)]),
 								response.size() - headerSize);
+						writer(response);
+						restore();
 					} else {
-						response += "HTTP/1.1 204 No Content\r\n\r\n";
+						constexpr std::string_view errorMessage = "HTTP/1.1 204 No Content\r\n\r\n";
+						writer(std::span<const char>(errorMessage.begin(), errorMessage.size()));
 					}
 				}
-				writer(response);
-				restore();
 			} else {
 				constexpr std::string_view errorMessage =
 									"HTTP/1.1 501 Method Not Implemented\n\r"
@@ -715,7 +718,7 @@ class HttpClient : public IRpcResponder {
 			Callback<void(IStructuredOutput&, RequestToken)> request) override {
 		auto methodName = PathWithSeparator<"/", StringT>::constructPath(method);
 
-		return send("application/x-www-form-urlencoded",
+		return post("application/x-www-form-urlencoded",
 					[methodName, &request] (StringT& output, RequestToken token) {
 			typename HtmlMessageEncoding<StringT>::Output writer = output;
 			request(writer, token);
@@ -747,8 +750,9 @@ public:
 	using StringType = StringT;
 	HttpClient(ITcpClient* client, std::string_view virtualHost) : _client(client), _virtualHost(virtualHost) {}
 
-	RequestToken send(std::string_view contentType,
+	RequestToken post(std::string_view contentType,
 			Callback<void(StringType&, RequestToken token)> request) {
+		_lastTokenWritten.id++;
 		StringType written;
 		constexpr char correctIntro[] = "POST / HTTP/1.1\r\nContent-Length: ";
 		constexpr char unsetSize[] = "0         ";
@@ -765,7 +769,6 @@ public:
 		std::to_chars(const_cast<char*>(&reqView[sizeof(correctIntro) - 1]),
 				const_cast<char*>(&reqView[sizeof(correctIntro) + sizeof(unsetSize)]),
 				written.size() - sizeBefore);
-		_lastTokenWritten.id++;
 		_client->writeRequest(std::span<char>{written.data(), written.size()});
 		return _lastTokenWritten;
 	}

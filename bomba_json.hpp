@@ -26,7 +26,7 @@ struct BasicJson {
 		}
 		
 		void fail(const char* problem) {
-			parseError(problem);
+			remoteError(problem);
 			good = false;
 		}
 		
@@ -205,18 +205,25 @@ struct BasicJson {
 			eatWhitespace();
 			int depth = 0;
 			do {
-				char readingChar = getChar();
-				if (readingChar == '{' || readingChar == '[')
+				char readingChar = peekChar();
+				if (readingChar == '{' || readingChar == '[') {
 					depth++;
-				else if (readingChar == '}' || readingChar == ']')
+					getChar();
+				} else if (readingChar == '}' || readingChar == ']') {
 					depth--;
-				else if (readingChar == ',') {
-					if (depth == 0)
+					getChar();
+					if (depth <= 0)
 						break;
+				} else if (depth == 0 && (readingChar == ' ' || readingChar == '\t'
+						|| readingChar == '\r' || readingChar == '\n' || readingChar == ',')) {
+					break; // eatWhitespace() was called before
 				} else if (readingChar == '"') {
+					getChar();
 					do {
 						readingChar = getChar();
 					} while (readingChar != '"' && _contents[_position - 1] != '\\');
+				} else { // Numbers, bool, null...
+					getChar();
 				}
 			} while (_contents.begin() + _position < _contents.end());
 		}

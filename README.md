@@ -10,8 +10,8 @@ Bomba is not feature complete, but is already usable for some purposes.
 
 ### Protocols
 Bomba implements several communication protocols for the purpose of communication in a standardised way supported by many other libraries. These are implemented in a way that avoids dynamic allocation, expecting the networking layer to make the necessary allocations (so that some buffers could be provided in a restrictive embedded environment).
-* Http - Minimal implementation, supporting only GET and POST, but usable as a web server with some interactive content
-* JSON-RPC - Not properly tested yet
+* HTTP - Minimal implementation, supporting only GET and POST, but usable as a web server with some interactive content
+* JSON-RPC - Built on top of HTTP POST
 
 Many other protocols should be possible to implement using the interfaces and concepts expected from protocols.
 
@@ -26,16 +26,19 @@ Currently, there are two networking related classes:
 	* uses only a few kilobytes of memory per session
 * `Bomba::SyncNetworkClient` (header `bomba_sync_client.hpp`)
 	* Sends a request and returns a ticket that can be used to read a received response (if it's not received yet, it blocks until it's received)
+	* It's possible to check if the response was already received, eliminating the need to block entirely
 
 ### Performance
 I have not optimised the code much yet.
 
-When testing the HTTP server component, the JMeter tool reported about 33000 responses to requests per second from a singlethreaded server (which is similar performance to Nginx), but it appeared to be more of a JMeter limitation. The server internally reported an average request processing time about 5800 nanoseconds, but this time could be greater because it did not track the overhead caused by the OS.
+When testing the HTTP server component, the JMeter tool reported about 33000 responses to requests per second from a singlethreaded server (which is similar performance to Nginx), but it appeared to be more of a JMeter limitation. The server internally reported an average HTTP request processing time about 6100 nanoseconds and JSON-RPC request processing time 7600 nanoseconds, but this time could be greater because it did not track the overhead caused by the OS. The measurement was done on a laptop CPU.
 
 ## Error handling
 Common problems like incomplete requests in receive buffers are handled by returning enums for these kinds of calls, either alone or as part of `std::pair` or `std::tuple` with other values.
 
-Less common problems like parse errors are handled by exceptions. The class representing the protocol (currently only HTTP) catches all exceptions and turns them into Error 500 responses. Other protocols are expected to handle their types of errors.
+Less common problems like parse errors are handled by exceptions. The class representing the toplevel protocol catches all exceptions and turns them into Error 500 responses. Other protocols are expected to handle their types of errors.
+
+JSON-RPC handles all `std::exception` instances, converting them to JSON-RPC errors. The exact error code shown might not be completely accurate because the specification is not very clear about it and I chose to interpret it in a way that's the most convenient the implement.
 
 The networking client throws an exception if the call fails so that an incorrect response is not returned. Thus, an exception in the server is propagated to the client (the exact type of exception will not be retained, obviously)
 
@@ -235,6 +238,55 @@ server.run();
 
 The `RpcGetResponder` class is defined in `bomba_http.hpp` and can be replaced by a custom class that modifies the returned file accordingly to the return value of the request. However, doing this would result in creating some sort of PHP duplicate, which would not be a good practice. A better feature for doing such a thing is planned.
 
+#### A basic JSON-RPC server
+This example shows how to make a JSON-RPC server that has two methods. It doesn't do anything beyond that.
+```C++
+#include <string>
+#include "bomba_tcp_server.hpp"
+#include "bomba_rpc_object.hpp"
+#include "bomba_json_rpc.hpp"
+
+struct MessageKeeper : Bomba::RpcObject<MessageKeeper> {
+	std::string message;
+
+	Bomba::RpcMember<[] (AdvancedRpcClass* parent) {
+		return parent->message;
+	}> getMessage = child<"get_message">;
+
+	Bomba::RpcMember<[] (AdvancedRpcClass* parent, std::string newMessage = Bomba::name("message")) {
+		parent->message = newMessage;
+	}> setMessage = child<"set_message">;
+};
+//...
+
+MessageKeeper method;
+Bomba::JsonRpcServer<std::string> jsonRpcServer = {&method};
+Bomba::BackgroundTcpServer<decltype(jsonRpcServer)> server = {&jsonRpcServer, 8080};
+server.run();
+```
+
+#### A JSON-RPC server that also responds to GET requests
+The `JsonRpcServer` class also accepts all the `getResponder` classes from earlier examples:
+```C++
+#include <string>
+#include "bomba_tcp_server.hpp"
+#include "bomba_rpc_object.hpp"
+#include "bomba_json_rpc.hpp"
+
+struct Summer : Bomba::RpcObject<Summer> {
+	Bomba::RpcMember<[] (int first = Bomba::name("first"), int second = Bomba::name("second")) {
+		return first + second;
+	}> sum = child<"sum">;
+};
+//...
+
+Summer method;
+Bomba::CachingFileServer cachingFileServer("public_html");
+Bomba::JsonRpcServer<std::string, Bomba::CachingFileServer> jsonRpcServer = {&method, &cachingFileServer};
+Bomba::BackgroundTcpServer<decltype(jsonRpcServer)> server = {&jsonRpcServer, 8080};
+server.run();
+```
+
 ### Clients
 Implementing a better client than `Bomba::SyncNetworkClient` might allow more functionality, but it should be good enough for convenient synchronous requests.
 
@@ -277,6 +329,44 @@ method("A verÿ lông messäge.", 2, true);
 ```
 
 It's possible to use `SyncNetworkClient` for non-blocking calls through the `async()` method. It works by checking what is in the receive buffer, it's not really asynchronous.
+```C++
+auto future = method.async("Hearken ye", 1, false);
+// later
+if (future.is_ready())
+	future.get();
+```
+
+#### JSON-RPC client
+This is the client counterpart for the [JSON-RPC server example](#a-basic-json-rpc-server):
+```C++
+#include <string>
+#include "bomba_sync_client.hpp"
+#include "bomba_rpc_object.hpp"
+#include "bomba_json_rpc.hpp"
+
+struct MessageKeeper : Bomba::RpcObject<MessageKeeper> {
+	std::string message;
+
+	Bomba::RpcMember<[] (AdvancedRpcClass* parent) {
+		return parent->message;
+	}> getMessage = child<"get_message">;
+
+	Bomba::RpcMember<[] (AdvancedRpcClass* parent, std::string newMessage = Bomba::name("message")) {
+		parent->message = newMessage;
+	}> setMessage = child<"set_message">;
+};
+//...
+
+MessageKeeper remote;
+Bomba::SyncNetworkClient client("0.0.0.0", "8080");
+Bomba::JsonRpcClient<> jsonRpc(&remote, &client, "0.0.0.0");
+remote.setResponder(&remote);
+
+std::cout << remote.getMessage() << std::endl;
+std::string newMessage;
+std::getline(std::cin, newMessage);
+remote.setMessage(newMessage);
+```
 
 ### Custom string type
 If you can't use `std::string` for some reasons (like restrictions regarding dynamic allocation), you can define your own string type (assuming it's called `String`) and serialise JSON as `Bomba::BasicJson<String>`. I recommend aliasing that type with `using`.

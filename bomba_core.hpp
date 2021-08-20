@@ -46,7 +46,7 @@ struct Callback {
 };
 
 template <typename Functor, typename Returned, typename... Args>
-concept FunctorForCallbackConstruction = requires(const Functor& functor, const Args&... args) {
+concept FunctorForCallbackConstruction = requires(Functor functor, const Args&... args) {
 	{ functor(args...) } -> std::same_as<Returned>;
 };
 
@@ -108,6 +108,7 @@ struct IStructuredOutput {
 	virtual void writeBool(Flags flags, bool value) = 0;
 	virtual void writeNull(Flags flags) = 0;
 	
+	constexpr static int UNKNOWN_SIZE = -1;
 	virtual void startWritingArray(Flags flags, int size) = 0;
 	virtual void introduceArrayElement(Flags flags, int index) = 0;
 	virtual void endWritingArray(Flags flags) = 0;
@@ -167,7 +168,8 @@ struct IStructuredInput {
 	virtual void endReadingObject(Flags flags) = 0;
 	
 	struct Location {
-		int loc;
+		constexpr static int UNINITIALISED = -1;
+		int loc = UNINITIALISED;
 	};
 	virtual Location storePosition(Flags flags) = 0;
 	virtual void restorePosition(Flags flags, Location location) = 0;
@@ -178,6 +180,7 @@ struct IStructuredInput {
 		while (std::optional<std::string_view> nextName = nextObjectElement(flags)) {
 			if (*nextName == name)
 				return true;
+			skipObjectElement(flags);
 		}
 		return false;
 	}
@@ -336,7 +339,7 @@ public:
 	}
 	
 	virtual bool call(IStructuredInput* arguments, IStructuredOutput& result, Callback<> introduceResult,
-			Callback<> introduceError, std::optional<UserId> user = std::nullopt) const {
+			Callback<void(std::string_view)> introduceError, std::optional<UserId> user = std::nullopt) const {
 		return false;
 	}
 	virtual const IRemoteCallable* getChild(std::string_view name) const {

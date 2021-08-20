@@ -16,7 +16,7 @@
 using namespace Bomba;
 
 using JSON = BasicJson<>;
-	
+
 constexpr static auto noFlags = JSON::Output::Flags::NONE;
 
 struct DummyObject : public ISerialisable {
@@ -28,7 +28,7 @@ struct DummyObject : public ISerialisable {
 	std::array<std::string, 3> tags = {"red", "quasi triangle", "small"};
 	std::map<std::string, std::string> notes = {{ "many", "[complaints]"}};
 	std::shared_ptr<std::string> story = std::make_shared<std::string>("Blablabla...");
-	
+
 	mutable int order = 0;
 	template <typename T>
 	void writeMember(IStructuredOutput& format, std::string name, T& member) const {
@@ -43,7 +43,7 @@ struct DummyObject : public ISerialisable {
 			throw ParseError("Expected " + name);
 		deserialiseMember(format, member, noFlags);
 	}
-	
+
 	void serialiseInternal(IStructuredOutput& format, SerialisationFlags::Flags) const override {
 		format.startWritingObject(noFlags, 9);
 		order = 0;
@@ -83,10 +83,10 @@ struct DummyRpcClass : IRemoteCallable {
 	std::string message;
 	int time = 0;
 	DummyRpcClass* backup = nullptr;
-	
+
 	struct : IRemoteCallable {
 		bool call(IStructuredInput* arguments, IStructuredOutput& result, Callback<> introduceResult,
-				Callback<>, std::optional<UserId>) const final override {
+				Callback<void(std::string_view)>, std::optional<UserId>) const final override {
 			if (arguments) {
 				arguments->startReadingObject(noFlags);
 				arguments->endReadingObject(noFlags);
@@ -101,7 +101,7 @@ struct DummyRpcClass : IRemoteCallable {
 				out.startWritingObject(noFlags, 0);
 				out.endWritingObject(noFlags);
 			});
-			
+
 			std::string returned;
 			responder->getResponse(token, [&] (IStructuredInput& response) {
 				returned = response.readString(noFlags);
@@ -112,7 +112,7 @@ struct DummyRpcClass : IRemoteCallable {
 	} getMessage = this;
 	struct : IRemoteCallable {
 		bool call(IStructuredInput* arguments, IStructuredOutput& result, Callback<> introduceResult,
-				Callback<> introduceError, std::optional<UserId>) const final override {
+				Callback<void(std::string_view)> introduceError, std::optional<UserId>) const final override {
 			if (!arguments) {
 				methodNotFoundError("Expected params");
 				return false;
@@ -143,14 +143,14 @@ struct DummyRpcClass : IRemoteCallable {
 				out.writeInt(noFlags, newTime);
 				out.endWritingObject(noFlags);
 			});
-			
+
 			responder->getResponse(token, [&] (IStructuredInput& response) {
 				response.readNull(noFlags);
 			});
 		}
 		using IRemoteCallable::IRemoteCallable;
 	} setTime = this;
-	
+
 	std::string_view childName(const IRemoteCallable* child) const final override {
 		if (child == &getMessage)
 			return "get_message";
@@ -170,7 +170,7 @@ struct DummyRpcClass : IRemoteCallable {
 		std::cout << "Cant find " << name << std::endl;
 		return nullptr;
 	}
-	
+
 	void setBackup(DummyRpcClass* newBackup) {
 		backup = newBackup;
 		setSelfAsParent(backup);
@@ -195,23 +195,23 @@ struct AdvancedRpcClass : RpcObject<AdvancedRpcClass> {
 
 struct FakeHttp {
 	using StringType = std::string;
-	
+
 	std::string written;
 	std::string toReturn;
 	RequestToken tokenToGive;
 	RequestToken tokenObtained;
-	
+
 	template <typename Lambda>
-	RequestToken post(UserId, const Lambda& call) {
+	RequestToken post(std::string_view contentType, const Lambda& call) {
 		call(written, tokenToGive);
 		return tokenToGive;
 	}
-	
+
 	template <typename Lambda>
 	void getResponse(RequestToken token, const Lambda& call) {
 		tokenToGive.id++;
 		tokenObtained = token;
-		call(toReturn);
+		call(toReturn, true);
 	}
 };
 
@@ -228,7 +228,7 @@ struct FakeClient : ITcpClient {
 					 (std::span<char> input, bool identified)> reader) override {
 		if (expandResponse)
 			expandResponse();
-		auto [reactionObtained, token, positionObtained] = reader(std::span<char>(response.begin(), response.size()), true);
+		auto [reactionObtained, token, positionObtained] = reader(std::span<char>(response.data(), response.size()), true);
 		reaction = reactionObtained;
 		position = positionObtained;
 	}
@@ -297,7 +297,7 @@ int main(int argc, char** argv) {
 		std::cout << "Testing JSON write" << std::endl;
 		std::string result;
 		JSON::Output out(result);
-		
+
 		out.startWritingObject(noFlags, 4);
 		out.introduceObjectMember(noFlags, "thirteen", 0);
 		out.writeInt(noFlags, 13);
@@ -313,55 +313,55 @@ int main(int argc, char** argv) {
 		out.writeString(noFlags, "strink");
 		out.endWritingArray(noFlags);
 		out.endWritingObject(noFlags);
-		
+
 		doATest(result, simpleJsonCode);
 	}
-	
+
 	{
 		std::cout << "Testing JSON read" << std::endl;
 		std::string result;
 		JSON::Input in(simpleJsonCode);
-		
+
 		doATest(in.identifyType(noFlags), IStructuredInput::TYPE_OBJECT);
 		in.startReadingObject(noFlags);
 		doATest(in.good, true);
-		
+
 		std::cout << "Testing JSON read int" << std::endl;
 		doATest(*in.nextObjectElement(noFlags), "thirteen");
 		doATest(in.identifyType(noFlags), IStructuredInput::TYPE_INTEGER);
 		doATest(in.readInt(noFlags), 13);
 		doATest(in.good, true);
-		
+
 		std::cout << "Testing JSON read float" << std::endl;
 		doATest(*in.nextObjectElement(noFlags), "twoAndHalf");
 		doATest(in.identifyType(noFlags), IStructuredInput::TYPE_FLOAT);
 		doATest(in.readFloat(noFlags), 2.5);
 		doATest(in.good, true);
-		
+
 		std::cout << "Testing JSON read bool" << std::endl;
 		doATest(*in.nextObjectElement(noFlags), "no");
 		doATest(in.identifyType(noFlags), IStructuredInput::TYPE_BOOLEAN);
 		doATest(in.readBool(noFlags), false);
 		doATest(in.good, true);
-		
+
 		std::cout << "Testing JSON read array" << std::endl;
 		doATest(*in.nextObjectElement(noFlags), "array");
 		doATest(in.identifyType(noFlags), IStructuredInput::TYPE_ARRAY);
 		in.startReadingArray(noFlags);
 		doATest(in.good, true);
-		
+
 		std::cout << "Testing JSON read null" << std::endl;
 		doATest(in.nextArrayElement(noFlags), true);
 		doATest(in.identifyType(noFlags), IStructuredInput::TYPE_NULL);
 		in.readNull(noFlags);
 		doATest(in.good, true);
-		
+
 		std::cout << "Testing JSON read string" << std::endl;
 		doATest(in.nextArrayElement(noFlags), true);
 		doATest(in.identifyType(noFlags), IStructuredInput::TYPE_STRING);
 		doATest(in.readString(noFlags), "strink");
 		doATest(in.good, true);
-		
+
 		std::cout << "Testing JSON read end" << std::endl;
 		doATest(in.nextArrayElement(noFlags), false);
 		in.endReadingArray(noFlags);
@@ -370,7 +370,7 @@ int main(int argc, char** argv) {
 		in.endReadingObject(noFlags);
 		doATest(in.good, true);
 	}
-	
+
 	std::string dummyObjectJson =
 			"{\n"
 			"	\"edges\" : 3,\n"
@@ -393,13 +393,13 @@ int main(int argc, char** argv) {
 			"	},\n"
 			"	\"story\" : null\n"
 			"}";
-	
+
 	{
 		std::cout << "Testing JSON skipping" << std::endl;
 		std::string result;
 		JSON::Input in(dummyObjectJson);
 		in.startReadingObject(noFlags);
-		
+
 		auto start = in.storePosition(noFlags);
 		for (int i = 0; i < 7; i++) {
 			in.nextObjectElement(noFlags);
@@ -408,12 +408,12 @@ int main(int argc, char** argv) {
 		doATest(*in.nextObjectElement(noFlags), "story");
 		doATest(in.identifyType(noFlags), IStructuredInput::TYPE_NULL);
 		doATest(in.good, true);
-		
+
 		in.restorePosition(noFlags, start);
 		doATest(*in.nextObjectElement(noFlags), "edges");
 		doATest(in.good, true);
 	}
-	
+
 	{
 		std::cout << "Testing template facade" << std::endl;
 		DummyObject tested;
@@ -426,7 +426,7 @@ int main(int argc, char** argv) {
 		tested.story = nullptr;
 		std::string written = tested.serialise<JSON>();
 		doATest(written, dummyObjectJson);
-		
+
 		DummyObject tested2;
 		tested2.deserialise<JSON>(dummyObjectJson);
 		doATest(tested2.edges, 3);
@@ -437,7 +437,7 @@ int main(int argc, char** argv) {
 		doATest(tested2.notes["none"], "nil");
 		doATest(tested2.story, nullptr);
 	}
-	
+
 	const std::string standardObjectJson =
 			"{\n"
 			"	\"index\" : 8,\n"
@@ -445,7 +445,7 @@ int main(int argc, char** argv) {
 			"	\"deleted\" : true,\n"
 			"	\"contents\" : \"Not much at this point\"\n"
 			"}";
-	
+
 	{
 		std::cout << "Testing Serialisable class write" << std::endl;
 		StandardObject tested;
@@ -454,7 +454,7 @@ int main(int argc, char** argv) {
 		tested.contents = "Not much at this point";
 		std::string written = tested.serialise<JSON>();
 		doATest(written, standardObjectJson);
-		
+
 		std::cout << "Testing Serialisable class read" << std::endl;
 		StandardObject tested2;
 		tested2.deserialise<JSON>(standardObjectJson);
@@ -463,7 +463,7 @@ int main(int argc, char** argv) {
 		doATest(tested2.deleted, true);
 		doATest(tested2.contents, "Not much at this point");
 	}
-	
+
 	const std::string dummyRpcRequest1 =
 			"{\n"
 			"	\"jsonrpc\" : \"2.0\",\n"
@@ -471,7 +471,7 @@ int main(int argc, char** argv) {
 			"	\"method\" : \"get_message\",\n"
 			"	\"params\" : {}\n"
 			"}";
-	
+
 	const std::string dummyRpcRequest2 =
 			"{\n"
 			"	\"jsonrpc\" : \"2.0\",\n"
@@ -481,7 +481,7 @@ int main(int argc, char** argv) {
 			"		\"new_time\" : 1366\n"
 			"	}\n"
 			"}";
-	
+
 	const std::string dummyRpcRequest3 =
 			"{\n"
 			"	\"params\" : {\n"
@@ -491,7 +491,7 @@ int main(int argc, char** argv) {
 			"	\"id\" : \"initial_time_set\","
 			"	\"jsonrpc\" : \"2.0\"\n"
 			"}";
-	
+
 	const std::string dummyRpcRequest4 =
 			"{\n"
 			"	\"jsonrpc\" : \"2.0\",\n"
@@ -499,68 +499,103 @@ int main(int argc, char** argv) {
 			"	\"method\" : \"backup.get_message\",\n"
 			"	\"params\" : {}\n"
 			"}";
-						
+
+	const std::string dummyRpcRequest5 =
+			"[\n"
+			"	{\n"
+			"		\"jsonrpc\" : \"2.0\",\n"
+			"		\"id\" : null,\n"
+			"		\"method\" : \"backup.get_message\",\n"
+			"		\"params\" : {}\n"
+			"	},\n"
+			"	{\n"
+			"		\"jsonrpc\" : \"2.0\",\n"
+			"		\"id\" : 3.5,\n"
+			"		\"method\" : \"get_message\",\n"
+			"		\"params\" : {}\n"
+			"	}\n"
+			"]";
+
 	const std::string dummyRpcReply1 =
-		 	"{\n"
+			"{\n"
 			"	\"jsonrpc\" : \"2.0\",\n"
 			"	\"id\" : 0,\n"
 			"	\"result\" : \"nevermind\"\n"
 			"}";
-						
+
 	const std::string dummyRpcReply2 =
-		 	"{\n"
+			"{\n"
 			"	\"jsonrpc\" : \"2.0\",\n"
 			"	\"id\" : 1,\n"
 			"	\"result\" : null\n"
 			"}";
-						
+
 	const std::string dummyRpcReply3 =
-		 	"{\n"
+			"{\n"
 			"	\"jsonrpc\" : \"2.0\",\n"
-			"	\"result\" : null,\n"
-			"	\"id\" : \"initial_time_set\"\n"
+			"	\"id\" : \"initial_time_set\",\n"
+			"	\"result\" : null\n"
 			"}";
-						
+
 	const std::string dummyRpcReply4 =
-		 	"{\n"
+			"{\n"
 			"	\"jsonrpc\" : \"2.0\",\n"
 			"	\"id\" : 2,\n"
 			"	\"result\" : \"actually...\"\n"
 			"}";
-	
+
+	const std::string dummyRpcReply5 =
+			"[\n"
+			"	{\n"
+			"		\"jsonrpc\" : \"2.0\",\n"
+			"		\"id\" : null,\n"
+			"		\"result\" : \"actually...\"\n"
+			"	},\n"
+			"	{\n"
+			"		\"jsonrpc\" : \"2.0\",\n"
+			"		\"id\" : 3.5,\n"
+			"		\"result\" : \"nevermind\"\n"
+			"	}\n"
+			"]";
+
 	{
-		std::cout << "Testing RPC server" << std::endl;
-		
+		std::cout << "Testing JSON-RPC server" << std::endl;
+
 		DummyRpcClass dummyRpcBackup;
 		DummyRpcClass dummyRpc;
 		dummyRpc.setBackup(&dummyRpcBackup);
 		dummyRpc.message = "nevermind";
 		dummyRpcBackup.message = "actually...";
 		std::string result;
-		auto goodCallback = [] (std::string_view) {};
+		auto writeStarter = [&] (std::string_view) -> std::string& { return result; };
+		auto viewToSpan = [] (std::string_view str) { return std::span<const char>(str.data(), str.size()); };
 		JsonRpcServerProtocol protocol = &dummyRpc;
-		protocol.post("", "application/json", dummyRpcRequest1, result, goodCallback, {});
+		protocol.post("", "application/json", viewToSpan(dummyRpcRequest1), writeStarter);
 		doATest(result, dummyRpcReply1);
-		
+
 		result.clear();
-		protocol.post("", "application/json", dummyRpcRequest2, result, goodCallback, {});
+		protocol.post("", "application/json", viewToSpan(dummyRpcRequest2), writeStarter);
 		doATest(result, dummyRpcReply2);
 		doATest(dummyRpc.time, 1366);
-		
+
 		dummyRpc.time = 1200;
 		result.clear();
-		protocol.post("", "application/json", dummyRpcRequest3, result, goodCallback, {});
+		protocol.post("", "application/json", viewToSpan(dummyRpcRequest3), writeStarter);
 		doATest(result, dummyRpcReply3);
 		doATest(dummyRpc.time, 1366);
-		
+
 		result.clear();
-		protocol.post("", "application/json", dummyRpcRequest4, result, goodCallback, {});
+		protocol.post("", "application/json", viewToSpan(dummyRpcRequest4), writeStarter);
 		doATest(result, dummyRpcReply4);
+
+		result.clear();
+		protocol.post("", "application/json", viewToSpan(dummyRpcRequest5), writeStarter);
+		doATest(result, dummyRpcReply5);
 	}
-	
+
 	{
-		std::cout << "Testing RPC client" << std::endl;
-		
+		std::cout << "Testing JSON-RPC client" << std::endl;
+
 		DummyRpcClass dummyRpcBackup;
 		DummyRpcClass dummyRpc;
 		dummyRpc.setBackup(&dummyRpcBackup);
@@ -569,18 +604,18 @@ int main(int argc, char** argv) {
 		http.toReturn = dummyRpcReply1;
 		doATest(dummyRpc.getMessage(), "nevermind");
 		doATest(http.written, dummyRpcRequest1);
-		
+
 		http.written.clear();
 		http.toReturn = dummyRpcReply2;
 		dummyRpc.setTime(1366);
 		doATest(http.written, dummyRpcRequest2);
-		
+
 		http.written.clear();
 		http.toReturn = dummyRpcReply4;
 		doATest(dummyRpc.backup->getMessage(), "actually...");
 		doATest(http.written, dummyRpcRequest4);
 	}
-	
+
 	const std::string advancedRpcRequest1 =
 			"{\n"
 			"	\"jsonrpc\" : \"2.0\",\n"
@@ -626,21 +661,21 @@ int main(int argc, char** argv) {
 			"	\"id\" : 2,\n"
 			"	\"result\" : 5\n"
 			"}";
-	
+
 	{
 		std::cout << "Testing RPC object" << std::endl;
 		AdvancedRpcClass advancedRpc;
 		std::string result;
-		auto goodCallback = [] (std::string_view) {};
-		auto badCallback = [] {};
+		auto writeStarter = [&] (std::string_view) -> std::string& { return result; };
+		auto viewToSpan = [] (std::string_view str) { return std::span<const char>(str.data(), str.size()); };
 		Bomba::JsonRpcServerProtocol protocol = &advancedRpc;
-		protocol.post("", "application/json", advancedRpcRequest1, result, goodCallback, badCallback);
+		protocol.post("", "application/json", viewToSpan(advancedRpcRequest1), writeStarter);
 		doATest(result, advancedRpcResponse1);
 		result.clear();
-		protocol.post("", "application/json", advancedRpcRequest2, result, goodCallback, badCallback);
+		protocol.post("", "application/json", viewToSpan(advancedRpcRequest2), writeStarter);
 		doATest(result, advancedRpcResponse2);
 		result.clear();
-		protocol.post("", "application/json", advancedRpcRequest3, result, goodCallback, badCallback);
+		protocol.post("", "application/json", viewToSpan(advancedRpcRequest3), writeStarter);
 		doATest(result, advancedRpcResponse3);
 
 		FakeHttp http;
@@ -666,7 +701,7 @@ int main(int argc, char** argv) {
 			"GET /conspiracy.html HTTP/1.1\r\n"
 			"Host: faecesbook.con\r\n"
 			"\r\n";
-					
+
 	const std::string replyToGet =
 			"HTTP/1.1 200 OK\r\n"
 			"Date: Sun, 11 Jul 2021 18:46:33 GMT\r\n" // Extra entries that must be ignored
@@ -674,7 +709,7 @@ int main(int argc, char** argv) {
 			"Content-Length: 9\r\n"
 			"\r\n"
 			"Blablabla";
-	
+
 	{
 		std::cout << "Testing HTTP client" << std::endl;
 
@@ -741,12 +776,12 @@ R"~(<!doctype html>
 
 	const std::string expectedPostResponse =
 				"HTTP/1.1 204 No Content\r\n\r\n";
-				
+
 	static std::string rpcTestAssigned = "";
 	using InlineMethod = Bomba::RpcLambda<[] (std::string newValue = Bomba::name("assigned")) {
 		rpcTestAssigned = newValue;
 	}>;
-	
+
 	{
 		std::cout << "Testing better HTTP client" << std::endl;
 		FakeClient client;
@@ -754,7 +789,7 @@ R"~(<!doctype html>
 		auto token = http.get("/?assigned=%26%2344608%3B%26%2351221%3B%26%2351008%3B+told+us");
 		doATest(client.request, longerExpectedGet);
 		client.response = sentHtml;
-		
+
 		std::string downloaded;
 		http.getResponse(token, [&] (std::span<char> response, bool success) {
 			doATest(success, true);
@@ -798,7 +833,7 @@ R"~(<!doctype html>
 			doATest("Götterdämerung! End is comiňg!", rpcTestAssigned);
 		}
 	}
-	
+
 	auto makeHttpTestFixture = [&] {
 		struct Fixture {
 			Bomba::SimpleGetResponder getResponder;
@@ -807,11 +842,11 @@ R"~(<!doctype html>
 			Bomba::HtmlPostResponder postResponder = {&methodServer};
 			Bomba::HttpServer<std::string, decltype(betterGetResponder), decltype(postResponder)> httpServer = {&betterGetResponder, &postResponder};
 			Bomba::BackgroundTcpServer<decltype(httpServer)> server = {&httpServer, 8901}; // Very unlikely this port will be used for something
-			
+
 			InlineMethod methodClient;
 			Bomba::SyncNetworkClient client = {"0.0.0.0", "8901"};
 			Bomba::HttpClient<> httpClient = {&client, "0.0.0.0"};
-			
+
 			Fixture(const std::string& html) {
 				getResponder.resource = html;
 				methodClient.setResponder(&httpClient);
@@ -820,7 +855,7 @@ R"~(<!doctype html>
 		};
 		return Fixture(someHtml);
 	};
-	
+
 	{
 		std::cout << "Testing HTTP loop on localhost" << std::endl;
 		auto fixture = makeHttpTestFixture();
@@ -831,18 +866,18 @@ R"~(<!doctype html>
 		});
 		fixture.methodClient("We are so woke");
 		doATest(rpcTestAssigned, "We are so woke");
-		
+
 		auto future = fixture.methodClient.async("We fear the needle");
 		while (!future.is_ready()) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(1));
 		}
 		doATest(rpcTestAssigned, "We fear the needle");
 	}
-	
+
 	{
 		std::cout << "Testing HTTP out of order" << std::endl;
 		auto fixture = makeHttpTestFixture();
-		
+
 		auto future1 = fixture.methodClient.async("We fear microchips");
 		auto future2 = fixture.methodClient.async("We fear the politicians");
 		auto future3 = fixture.methodClient.async("We fear the 5G");
@@ -851,7 +886,7 @@ R"~(<!doctype html>
 		future2.get();
 		future1.get();
 	}
-	
+
 	{
 		std::cout << "Internally benchmarking HTTP server's GET...";
 		auto fixture = makeHttpTestFixture();
@@ -863,12 +898,97 @@ R"~(<!doctype html>
 		}
 		std::cout << " average response time is " << fixture.server.averageResponseTime().count() << " ns" << std::endl;
 	}
-	
+
 	{
 		std::cout << "Internally benchmarking HTTP server's POST...";
 		auto fixture = makeHttpTestFixture();
 		for (int i = 0; i < 2000; i++) {
 			fixture.methodClient("Protest against the clouds!");
+		}
+		std::cout << " average response time is " << fixture.server.averageResponseTime().count() << " ns" << std::endl;
+	}
+
+	const std::string expectedJsonRpcRequest =
+					"POST / HTTP/1.1\r\n"
+					"Content-Length: 100\r\n"
+					"Host: 0.0.0.0\r\n"
+					"Content-Type: application/json\r\n\r\n"
+					"{\n"
+					"	\"jsonrpc\" : \"2.0\",\n"
+					"	\"id\" : 1,\n"
+					"	\"method\" : \"sum\",\n"
+					"	\"params\" : {\n"
+					"		\"first\" : 3,\n"
+					"		\"second\" : 5\n"
+					"	}\n"
+					"}";
+	const std::string expectedJsonRpcResponse =
+					"HTTP/1.1 200 OK\r\n"
+					"Content-Length: 48\r\n"
+					"ContentType: application/json\r\n\r\n"
+					"{\n"
+					"	\"jsonrpc\" : \"2.0\",\n"
+					"	\"id\" : 1\n,"
+					"	\"result\" : 8\n"
+					"}";
+
+	{
+		std::cout << "Testing JSON-RPC client" << std::endl;
+		AdvancedRpcClass method;
+
+		FakeClient client;
+		Bomba::HttpClient<> http(&client, "faecesbook.con");
+		Bomba::JsonRpcClient<> jsonRpc(&method, &client, "0.0.0.0");
+		method.setResponder(&jsonRpc);
+
+		client.response = expectedJsonRpcResponse;
+		doATest(method.sum(3, 5), 8);
+		doATestIgnoringWhitespace(client.request, expectedJsonRpcRequest);
+	}
+
+	{
+		std::cout << "Testing JSON-RPC server" << std::endl;
+		AdvancedRpcClass method;
+		Bomba::SimpleGetResponder getResponder;
+		getResponder.resource = someHtml;
+		Bomba::JsonRpcServer<std::string, decltype(getResponder)> jsonRpc(&method, &getResponder);
+		FakeServer server = {&jsonRpc};
+		auto [response, reaction] = server.respond(expectedJsonRpcRequest);
+		doATest(int(reaction), int(ServerReaction::OK));
+		doATestIgnoringWhitespace(response, expectedJsonRpcResponse);
+	}
+	
+	auto makeJsonRpcTestFixture = [&] {
+		struct Fixture {
+			AdvancedRpcClass methodServer;
+			Bomba::JsonRpcServer<std::string> jsonRpcServer = {&methodServer};
+			Bomba::BackgroundTcpServer<decltype(jsonRpcServer)> server = {&jsonRpcServer, 8901}; // Very unlikely this port will be used for something
+
+			AdvancedRpcClass methodClient;
+			Bomba::SyncNetworkClient client = {"0.0.0.0", "8901"};
+			Bomba::JsonRpcClient<> jsonRpcClient = {&methodClient, &client, "0.0.0.0"};
+			Fixture() {
+				methodClient.setResponder(&jsonRpcClient);
+			}
+
+		};
+		return Fixture();
+	};
+	
+	{
+		std::cout << "Testing JSON-RPC loop on localhost" << std::endl;
+		auto fixture = makeJsonRpcTestFixture();
+		fixture.methodClient.setMessage("Believe a random guy on 4chan!");
+		doATest(fixture.methodServer.message, "Believe a random guy on 4chan!");
+		fixture.methodServer.message = "In 4chan we trust";
+		doATest(fixture.methodClient.getMessage(), "In 4chan we trust");
+	}
+
+	{
+		std::cout << "Internally benchmarking the JSON-RPC server...";
+		auto fixture = makeJsonRpcTestFixture();
+		for (int i = 0; i < 2000; i++) {
+			fixture.methodClient.setMessage("Anonymous trolls are the most credible!");
 		}
 		std::cout << " average response time is " << fixture.server.averageResponseTime().count() << " ns" << std::endl;
 	}

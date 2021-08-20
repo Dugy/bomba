@@ -339,7 +339,7 @@ namespace Detail {
 		}
 
 		bool call(IStructuredInput* arguments, IStructuredOutput& result, Callback<> introduceResult,
-				Callback<>, std::optional<UserId>) const final override {
+				Callback<void(std::string_view)>, std::optional<UserId>) const final override {
 			ArgsTuple input;
 			if constexpr(usesParent()) {
 				std::get<0>(input) = static_cast<FirstArg>(parent());
