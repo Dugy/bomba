@@ -83,7 +83,7 @@ class JsonRpcServerProtocol {
 			output.startWritingObject(noFlags, 2);
 			output.introduceObjectMember(noFlags, "code", 0);
 			output.writeInt(noFlags, int(errorType));
-			output.introduceObjectMember(noFlags, "mesage", 1);
+			output.introduceObjectMember(noFlags, "message", 1);
 			output.writeString(noFlags, message);
 			output.endWritingObject(noFlags);
 		};
@@ -106,7 +106,7 @@ class JsonRpcServerProtocol {
 						NullStructredOutput nullOutput;
 						method->call(inputSelected, nullOutput, introduceResult, introduceError);
 					}
-				}
+				} else input.skipObjectElement(noFlags);
 			};
 			auto readMethod = [&] () {
 				auto path = input.readString(noFlags);
@@ -274,7 +274,16 @@ public:
 						parseError("Out of order response");
 					}
 				} else if (*nextName == "error") {
-					remoteError("Call failed"); // TODO: Actually rethrow
+					input.startReadingObject(noFlags);
+					std::optional<std::string_view> nextErrorElement;
+					while ((nextErrorElement = input.nextObjectElement(noFlags))) {
+						if (*nextErrorElement == "message") {
+							std::string_view message = input.readString(noFlags);
+							remoteError(message);
+							return false;
+						} else input.skipObjectElement(noFlags);
+					}
+					remoteError("Call failed");
 					return false;
 				} else if (*nextName == "result") {
 					reader(input);
@@ -311,6 +320,10 @@ public:
 	JsonRpcClient(IRemoteCallable* callable, ITcpClient* client, std::string_view virtualHost)
 			: Detail::HttpOwner<StringType>{{client, virtualHost}},
 			  JsonRpcClientProtocol<HttpClient<StringType>>(callable, &(HttpOwner::http)) {}
+
+	bool hasResponse(RequestToken token) override {
+		return static_cast<IRpcResponder&>(HttpOwner::http).hasResponse(token);
+	}
 };
 
 } // namespace Bomba

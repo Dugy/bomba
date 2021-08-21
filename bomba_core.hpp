@@ -16,26 +16,26 @@ namespace Bomba {
 struct ParseError : std::runtime_error {
 	using std::runtime_error::runtime_error;
 };
-void parseError(const char* problem) {
-	throw ParseError(problem);
+void parseError(std::string_view problem) {
+	throw ParseError(std::string(problem));
 }
 
 struct MethodNotFoundError : std::runtime_error {
 	using std::runtime_error::runtime_error;
 };
-void methodNotFoundError(const char* problem) {
-	throw MethodNotFoundError(problem);
+void methodNotFoundError(std::string_view problem) {
+	throw MethodNotFoundError(std::string(problem));
 }
 
 struct RemoteError : std::runtime_error {
 	using std::runtime_error::runtime_error;
 };
-void remoteError(const char* problem) {
-	throw RemoteError(problem);
+void remoteError(std::string_view problem) {
+	throw RemoteError(std::string(problem));
 }
 
-void logicError(const char* problem) {
-	throw std::logic_error(problem);
+void logicError(std::string_view problem) {
+	throw std::logic_error(std::string(problem));
 }
 #endif
 

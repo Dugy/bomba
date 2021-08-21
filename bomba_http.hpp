@@ -609,6 +609,7 @@ public:
 			if (_state.bodySize == -1) {
 				auto [reaction, position] = _state.parse(firstLineReader, headerReader, input);
 				if (reaction != ServerReaction::OK) {
+					restore();
 					return {reaction, position};
 				}
 			}
@@ -683,6 +684,7 @@ public:
 					} else {
 						constexpr std::string_view errorMessage = "HTTP/1.1 204 No Content\r\n\r\n";
 						writer(std::span<const char>(errorMessage.begin(), errorMessage.size()));
+						restore();
 					}
 				}
 			} else {
