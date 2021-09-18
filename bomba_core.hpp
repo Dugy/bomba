@@ -99,6 +99,11 @@ namespace SerialisationFlags {
 	};
 };
 
+template <typename T>
+struct TypedSerialiser {
+	static_assert(!std::is_same_v<T, T>, "No specialisation for serialising this type");
+};
+
 struct IStructuredOutput {
 	using Flags = SerialisationFlags::Flags;
 
@@ -249,6 +254,23 @@ concept BetterAssembledString = std::is_constructible_v<T>
 template <typename T>
 concept DataFormat = std::is_base_of_v<IStructuredOutput, typename T::Output>
 		&& std::is_base_of_v<IStructuredInput, typename T::Input>;
+
+struct IPropertyDescriptionFiller {
+	virtual void addMember(std::string_view name, std::string_view description, Callback<> writer) = 0;
+	virtual void addInteger() = 0;
+	virtual void addFloat() = 0;
+	virtual void addBoolean() = 0;
+	virtual void addString() = 0;
+	virtual void addOptional(Callback<void(IPropertyDescriptionFiller&)> filler) = 0;
+	virtual void addArray(Callback<void(IPropertyDescriptionFiller&)> filler) = 0;
+	virtual void addSubobject(std::optional<std::string_view> typeName,
+			Callback<void(IPropertyDescriptionFiller&)> filler) = 0;
+};
+
+struct ISerialisableDescriptionFiller {
+	virtual void addMoreTypes(Callback<void(ISerialisableDescriptionFiller&)> otherFiller) = 0;
+	virtual void fillMembers(std::string_view name, Callback<void(IPropertyDescriptionFiller&)> filler) = 0;
+};
 	
 struct ISerialisable {
 	template <DataFormat F>
@@ -277,9 +299,31 @@ protected:
 			SerialisationFlags::Flags flags = SerialisationFlags::NONE) const = 0;
 	virtual bool deserialiseInternal(IStructuredInput& format,
 			SerialisationFlags::Flags flags = SerialisationFlags::NONE) = 0;
-			
-	friend void serialiseMember(IStructuredOutput&, const ISerialisable&, SerialisationFlags::Flags);
-	friend void deserialiseMember(IStructuredInput&, ISerialisable&, SerialisationFlags::Flags);
+
+	template <typename> friend struct TypedSerialiser;
+};
+
+struct IDescribableSerialisable : ISerialisable {
+	virtual void describe(IPropertyDescriptionFiller& filler) const {
+		// Does nothing if not supported
+	}
+	virtual std::string_view getTypeName() const {
+		return "Unnamed";
+	}
+	virtual void listTypes(ISerialisableDescriptionFiller& filler) const {
+		// Not supported if not overloaded, does nothing
+	}
+	template <typename> friend struct TypedSerialiser;
+};
+
+struct IMethodDescriptionFiller {
+	virtual void addParameter(std::string_view name, std::string_view type, std::string_view description, bool mandatory) = 0;
+};
+
+struct IRemoteCallableDescriptionFiller {
+	virtual void addMethod(std::string_view name, std::string_view description,
+			Callback<void(IPropertyDescriptionFiller&)> paramFiller, Callback<void(IPropertyDescriptionFiller&)> returnFiller) = 0;
+	virtual void addSubobject(std::string_view name, Callback<void(IRemoteCallableDescriptionFiller&)> nestedFiller) = 0;
 };
 
 class IRemoteCallable;
@@ -287,6 +331,7 @@ class IRemoteCallable;
 struct UserId {
 	int id;
 };
+
 struct RequestToken {
 	int id = 0;
 	bool operator==(RequestToken other) const {
@@ -348,6 +393,13 @@ public:
 	virtual std::string_view childName(const IRemoteCallable* child) const {
 		logicError("No such structure");
 		return "";
+	}
+	
+	virtual void listTypes(ISerialisableDescriptionFiller& filler) const {
+		// Not supported if not overloaded, does nothing
+	}
+	virtual void generateDescription(IRemoteCallableDescriptionFiller& filler) const {
+		// Not supported if not overloaded, does nothing
 	}
 };
 
@@ -424,40 +476,77 @@ struct ITcpResponder {
 // Matching types to the interface
 
 template <std::integral Integer>
-void serialiseMember(IStructuredOutput& out, Integer value, SerialisationFlags::Flags flags) {
-	out.writeInt(flags, value);
-}
+struct TypedSerialiser<Integer> {
+	static void serialiseMember(IStructuredOutput& out, Integer value, SerialisationFlags::Flags flags) {
+		out.writeInt(flags, value);
+	}
 
-template <std::integral Integer>
-void deserialiseMember(IStructuredInput& in, Integer& value, SerialisationFlags::Flags flags) {
-	value = in.readInt(flags);
-}
+	static void deserialiseMember(IStructuredInput& in, Integer& value, SerialisationFlags::Flags flags) {
+		value = in.readInt(flags);
+	}
+
+	static void describeType(IPropertyDescriptionFiller& filler)  {
+		filler.addInteger();
+	}
+	static void listTypes(ISerialisableDescriptionFiller&) {};
+};
 
 template <std::floating_point Float>
-void serialiseMember(IStructuredOutput& out, Float value, SerialisationFlags::Flags flags) {
-	out.writeFloat(flags, value);
-}
+struct TypedSerialiser<Float> {
+	static void serialiseMember(IStructuredOutput& out, Float value, SerialisationFlags::Flags flags) {
+		out.writeFloat(flags, value);
+	}
 
-template <std::floating_point Float>
-void deserialiseMember(IStructuredInput& in, Float& value, SerialisationFlags::Flags flags) {
-	value = in.readFloat(flags);
-}
+	static void deserialiseMember(IStructuredInput& in, Float& value, SerialisationFlags::Flags flags) {
+		value = in.readFloat(flags);
+	}
 
-void serialiseMember(IStructuredOutput& out, bool value, SerialisationFlags::Flags flags) {
-	out.writeBool(flags, value);
-}
+	static void describeType(IPropertyDescriptionFiller& filler)  {
+		filler.addFloat();
+	}
+	static void listTypes(ISerialisableDescriptionFiller&) {};
+};
 
-void deserialiseMember(IStructuredInput& in, bool& value, SerialisationFlags::Flags flags) {
-	value = in.readBool(flags);
-}
+template <>
+struct TypedSerialiser<bool> {
+	static void serialiseMember(IStructuredOutput& out, bool value, SerialisationFlags::Flags flags) {
+		out.writeBool(flags, value);
+	}
 
-void serialiseMember(IStructuredOutput& out, const ISerialisable& value, SerialisationFlags::Flags flags) {
-	value.serialiseInternal(out, flags);
-}
+	static void deserialiseMember(IStructuredInput& in, bool& value, SerialisationFlags::Flags flags) {
+		value = in.readBool(flags);
+	}
 
-void deserialiseMember(IStructuredInput& in, ISerialisable& value, SerialisationFlags::Flags flags) {
-	value.deserialiseInternal(in, flags);
-}
+	static void describeType(IPropertyDescriptionFiller& filler)  {
+		filler.addBoolean();
+	}
+	static void listTypes(ISerialisableDescriptionFiller&) {};
+};
+
+template <std::derived_from<ISerialisable> Serialisable>
+struct TypedSerialiser<Serialisable> {
+	static void serialiseMember(IStructuredOutput& out, const Serialisable& value, SerialisationFlags::Flags flags) {
+		static_cast<const ISerialisable&>(value).serialiseInternal(out, flags);
+	}
+
+	static void deserialiseMember(IStructuredInput& in, Serialisable& value, SerialisationFlags::Flags flags) {
+		static_cast<ISerialisable&>(value).deserialiseInternal(in, flags);
+	}
+
+	static void describeType(IPropertyDescriptionFiller& filler)  {
+		Serialisable value;
+		filler.addSubobject(value.getTypeName(), [&value] (IPropertyDescriptionFiller& subFiller) {
+			value.describe(subFiller);
+		});
+	}
+	static void listTypes(ISerialisableDescriptionFiller& filler) {
+		Serialisable instance;
+		instance.listTypes(filler);
+		filler.fillMembers(instance.getTypeName(), [&instance] (IPropertyDescriptionFiller& propertyFiller) {
+			instance.describe(propertyFiller);
+		});
+	};
+};
 
 template <typename T>
 concept MemberString = requires(T value, std::string_view view) {
@@ -466,39 +555,59 @@ concept MemberString = requires(T value, std::string_view view) {
 };
 
 template <MemberString StringType>
-void serialiseMember(IStructuredOutput& out, const StringType& value, SerialisationFlags::Flags flags) {
-	out.writeString(flags, value);
-}
+struct TypedSerialiser<StringType> {
+	static void serialiseMember(IStructuredOutput& out, const StringType& value, SerialisationFlags::Flags flags) {
+		out.writeString(flags, value);
+	}
 
-template <MemberString StringType>
-void deserialiseMember(IStructuredInput& in, StringType& value, SerialisationFlags::Flags flags) {
-	value = in.readString(flags);
-}
+	static void deserialiseMember(IStructuredInput& in, StringType& value, SerialisationFlags::Flags flags) {
+		value = in.readString(flags);
+	}
+
+	static void describeType(IPropertyDescriptionFiller& filler)  {
+		filler.addString();
+	}
+	static void listTypes(ISerialisableDescriptionFiller&) {};
+};
 
 template <typename T>
 concept WithSerialiserFunctions = requires(T value, IStructuredInput& in, IStructuredOutput& out) {
-	serialiseMember(out, value, SerialisationFlags::NONE);
-	deserialiseMember(in, value, SerialisationFlags::NONE);
+	TypedSerialiser<std::decay_t<T>>::serialiseMember(out, value, SerialisationFlags::NONE);
+	TypedSerialiser<std::decay_t<T>>::deserialiseMember(in, value, SerialisationFlags::NONE);
 };
 
 template <WithSerialiserFunctions T, size_t size>
-void serialiseMember(IStructuredOutput& out, const std::array<T, size>& value, SerialisationFlags::Flags flags) {
-	out.startWritingArray(flags, size);
-	for (int i = 0; i < int(size); i++) {
-		out.introduceArrayElement(flags, i);
-		serialiseMember(out, value[i], flags);
+struct TypedSerialiser<std::array<T, size>> {
+	static_assert (WithSerialiserFunctions<T>);
+	static void serialiseMember(IStructuredOutput& out, const std::array<T, size>& value, SerialisationFlags::Flags flags) {
+		out.startWritingArray(flags, size);
+		for (int i = 0; i < int(size); i++) {
+			out.introduceArrayElement(flags, i);
+			TypedSerialiser<T>::serialiseMember(out, value[i], flags);
+		}
+		out.endWritingArray(flags);
 	}
-	out.endWritingArray(flags);
-}
 
-template <WithSerialiserFunctions T, size_t size>
-void deserialiseMember(IStructuredInput& in, std::array<T, size>& value, SerialisationFlags::Flags flags) {
-	in.startReadingArray(flags);
-	for (int i = 0; i < int(size) && in.nextArrayElement(flags); i++) {
-		deserialiseMember(in, value[i], flags);
+	static void deserialiseMember(IStructuredInput& in, std::array<T, size>& value, SerialisationFlags::Flags flags) {
+		in.startReadingArray(flags);
+		for (int i = 0; i < int(size) && in.nextArrayElement(flags); i++) {
+			TypedSerialiser<T>::deserialiseMember(in, value[i], flags);
+		}
+		in.endReadingArray(flags);
 	}
-	in.endReadingArray(flags);
-}
+
+	static void describeType(IPropertyDescriptionFiller& filler)  {
+		static_assert(size > 0, "Can't describe arrays with 0 elements");
+		filler.addArray([&] (IPropertyDescriptionFiller& subFiller) {
+			T value;
+			TypedSerialiser<T>::describeType(subFiller);
+		});
+	}
+
+	static void listTypes(ISerialisableDescriptionFiller& filler) {
+		TypedSerialiser<T>::listTypes(filler);
+	};
+};
 
 template <typename V>
 concept SerialisableVector = !MemberString<V> && requires(V v) {
@@ -509,29 +618,42 @@ concept SerialisableVector = !MemberString<V> && requires(V v) {
 };
 
 template <SerialisableVector Vector>
-void serialiseMember(IStructuredOutput& out, const Vector& value, SerialisationFlags::Flags flags) {
-	out.startWritingArray(flags, value.size());
-	for (int i = 0; i < int(value.size()); i++) {
-		out.introduceArrayElement(flags, i);
-		serialiseMember(out, value[i], flags);
+struct TypedSerialiser<Vector> {
+	using ValueType = std::decay_t<decltype(std::declval<Vector>()[0])>;
+	static void serialiseMember(IStructuredOutput& out, const Vector& value, SerialisationFlags::Flags flags) {
+		out.startWritingArray(flags, value.size());
+		for (int i = 0; i < int(value.size()); i++) {
+			out.introduceArrayElement(flags, i);
+			TypedSerialiser<ValueType>::serialiseMember(out, value[i], flags);
+		}
+		out.endWritingArray(flags);
 	}
-	out.endWritingArray(flags);
-}
 
-template <SerialisableVector Vector>
-void deserialiseMember(IStructuredInput& in, Vector& value, SerialisationFlags::Flags flags) {
-	in.startReadingArray(flags);
-	int index = 0;
-	while (in.nextArrayElement(flags)) {
-		if (int(value.size()) < index + 1)
-			value.emplace_back(typename Vector::value_type());
-		deserialiseMember(in, value[index], flags);
-		index++;
+	static void deserialiseMember(IStructuredInput& in, Vector& value, SerialisationFlags::Flags flags) {
+		in.startReadingArray(flags);
+		int index = 0;
+		while (in.nextArrayElement(flags)) {
+			if (int(value.size()) < index + 1)
+				value.emplace_back(typename Vector::value_type());
+			TypedSerialiser<ValueType>::deserialiseMember(in, value[index], flags);
+			index++;
+		}
+		if (int(value.size()) > index)
+			value.resize(index);
+		in.endReadingArray(flags);
 	}
-	if (int(value.size()) > index)
-		value.resize(index);
-	in.endReadingArray(flags);
-}
+
+	static void describeType(IPropertyDescriptionFiller& filler)  {
+		filler.addArray([] (IPropertyDescriptionFiller& subFiller) {
+			std::remove_reference_t<decltype(std::declval<Vector>()[0])> value;
+			TypedSerialiser<ValueType>::describeType(subFiller);
+		});
+	}
+
+	static void listTypes(ISerialisableDescriptionFiller& filler) {
+		TypedSerialiser<ValueType>::listTypes(filler);
+	};
+};
 
 template <typename M>
 concept SerialisableMap = requires(M map, M secondMap, typename M::key_type key) {
@@ -545,70 +667,114 @@ concept SerialisableMap = requires(M map, M secondMap, typename M::key_type key)
 };
 
 template <SerialisableMap Map>
-void serialiseMember(IStructuredOutput& out, const Map& value, SerialisationFlags::Flags flags) {
-	out.startWritingObject(flags, value.size());
-	int index = 0;
-	for (auto& it : value) {
-		out.introduceObjectMember(flags, std::string_view(it.first), index);
-		serialiseMember(out, it.second, flags);
-		index++;
+struct TypedSerialiser<Map> {
+	using ValueType = std::decay_t<decltype(std::declval<Map>().begin()->second)>;
+	static void serialiseMember(IStructuredOutput& out, const Map& value, SerialisationFlags::Flags flags) {
+		out.startWritingObject(flags, value.size());
+		int index = 0;
+		for (auto& it : value) {
+			out.introduceObjectMember(flags, std::string_view(it.first), index);
+			TypedSerialiser<ValueType>::serialiseMember(out, it.second, flags);
+			index++;
+		}
+		out.endWritingObject(flags);
 	}
-	out.endWritingObject(flags);
-}
 
-template <SerialisableMap Map>
-void deserialiseMember(IStructuredInput& in, Map& value, SerialisationFlags::Flags flags) {
-	in.startReadingObject(flags);
-	std::optional<std::string_view> elementName;
-	if (value.empty()) {
-		while ((elementName = in.nextObjectElement(flags))) { // Yes, there is an assignment
-			deserialiseMember(in, value[typename Map::key_type(*elementName)], flags);
+	static void deserialiseMember(IStructuredInput& in, Map& value, SerialisationFlags::Flags flags) {
+		in.startReadingObject(flags);
+		std::optional<std::string_view> elementName;
+		if (value.empty()) {
+			while ((elementName = in.nextObjectElement(flags))) { // Yes, there is an assignment
+				TypedSerialiser<ValueType>::deserialiseMember(in, value[typename Map::key_type(*elementName)], flags);
+			}
+		} else {
+			// If there were some elements, update them and move them into a new map
+			// Manipulating a set of names that were already used would be annoying
+			Map result;
+			while ((elementName = in.nextObjectElement(flags))) {
+				auto found = value.find(typename Map::key_type(*elementName));
+				if (found != value.end()) {
+					TypedSerialiser<ValueType>::deserialiseMember(in, found->second, flags);
+					result[typename Map::key_type(*elementName)] = std::move(found->second);
+				} else
+					TypedSerialiser<ValueType>::deserialiseMember(in, result[typename Map::key_type(*elementName)], flags);
+			}
+			std::swap(result, value);
 		}
-	} else {
-		// If there were some elements, update them and move them into a new map
-		// Manipulating a set of names that were already used would be annoying
-		Map result;
-		while ((elementName = in.nextObjectElement(flags))) {
-			auto found = value.find(typename Map::key_type(*elementName));
-			if (found != value.end()) {
-				deserialiseMember(in, found->second, flags);
-				result[typename Map::key_type(*elementName)] = std::move(found->second);
-			} else
-				deserialiseMember(in, result[typename Map::key_type(*elementName)], flags);
-		}
-		std::swap(result, value);
+		in.endReadingObject(flags);
 	}
-	in.endReadingObject(flags);
-}
+
+	static void describeType(IPropertyDescriptionFiller& filler)  {
+		filler.addSubobject(std::nullopt, [] (IPropertyDescriptionFiller& subFiller) {
+			std::remove_reference_t<decltype(std::declval<Map>().begin()->second)> value;
+			TypedSerialiser<ValueType>::describeType(subFiller);
+		});
+	}
+
+	static void listTypes(ISerialisableDescriptionFiller& filler) {
+		TypedSerialiser<ValueType>::listTypes(filler);
+	};
+};
 
 template <typename P>
-concept SerialisableSmartPointer = requires(P p, std::decay_t<decltype(*p)>* raw) {
+concept SerialisableSmartPointerBase = requires(P p, std::decay_t<decltype(*p)>* raw) {
 	P(raw);
+};
+
+template <typename P>
+concept SerialisableOptionalBase = requires(P p, std::decay_t<decltype(*p)> instance) {
+	P(instance);
+};
+
+template <typename P>
+concept SerialisableSmartPointerLike = requires(P p) {
 	{ *p } -> WithSerialiserFunctions;
 	p.reset();
 	bool(p);
 };
 
-template <SerialisableSmartPointer Ptr>
-void serialiseMember(IStructuredOutput& out, const Ptr& value, SerialisationFlags::Flags flags) {
-	if (value)
-		serialiseMember(out, *value, flags);
-	else
-		out.writeNull(flags);
-}
+template <typename P>
+concept SerialisableSmartPointer = SerialisableSmartPointerBase<P> && SerialisableSmartPointerLike<P>;
 
-template <SerialisableSmartPointer Ptr>
-void deserialiseMember(IStructuredInput& in, Ptr& value, SerialisationFlags::Flags flags) {
-	if (in.identifyType(flags) != IStructuredInput::TYPE_NULL) {
-		if (!value)
-			value = Ptr(new std::decay_t<decltype(*value)>());
-		deserialiseMember(in, *value, flags);
-	} else {
+template <typename P>
+concept SerialisableOptional = SerialisableOptionalBase<P> && SerialisableSmartPointerLike<P>;
+
+template <typename P>
+concept SerialisableOptionalOrSmartPointer =
+		(SerialisableSmartPointerBase<P> || SerialisableOptionalBase<P>) && SerialisableSmartPointerLike<P>;
+
+template <SerialisableOptionalOrSmartPointer Ptr>
+struct TypedSerialiser<Ptr> {
+	using ValueType = std::decay_t<decltype(*std::declval<Ptr>())>;
+	static void serialiseMember(IStructuredOutput& out, const Ptr& value, SerialisationFlags::Flags flags) {
 		if (value)
-			value.reset();
+			TypedSerialiser<ValueType>::serialiseMember(out, *value, flags);
+		else
+			out.writeNull(flags);
 	}
-}
 
+	static void deserialiseMember(IStructuredInput& in, Ptr& value, SerialisationFlags::Flags flags) {
+		if (in.identifyType(flags) != IStructuredInput::TYPE_NULL) {
+			if (!value)
+				value = Ptr(new std::decay_t<decltype(*value)>());
+			TypedSerialiser<ValueType>::deserialiseMember(in, *value, flags);
+		} else {
+			if (value)
+				value.reset();
+		}
+	}
+
+	static void describeType(IPropertyDescriptionFiller& filler)  {
+		filler.addOptional([] (IPropertyDescriptionFiller& subFiller) {
+			std::remove_reference_t<decltype(*std::declval<Ptr>())> value;
+			TypedSerialiser<ValueType>::describeType(subFiller);
+		});
+	}
+
+	static void listTypes(ISerialisableDescriptionFiller& filler) {
+		TypedSerialiser<ValueType>::listTypes(filler);
+	};
+};
 
 } // namespace Bomba
 

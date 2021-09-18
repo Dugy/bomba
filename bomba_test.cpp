@@ -8,6 +8,7 @@
 #include "bomba_http.hpp"
 #include "bomba_tcp_server.hpp"
 #include "bomba_sync_client.hpp"
+#include "bomba_json_wsp_description.hpp"
 #include <string>
 #include <vector>
 #include <map>
@@ -19,7 +20,7 @@ using JSON = BasicJson<>;
 
 constexpr static auto noFlags = JSON::Output::Flags::NONE;
 
-struct DummyObject : public ISerialisable {
+struct DummyObject : public IDescribableSerialisable {
 	int edges = 2;
 	bool isRed = true;
 	std::string name = "MiniTriangle";
@@ -33,7 +34,7 @@ struct DummyObject : public ISerialisable {
 	template <typename T>
 	void writeMember(IStructuredOutput& format, std::string name, T& member) const {
 		format.introduceObjectMember(noFlags, name, order);
-		serialiseMember(format, member, noFlags);
+		TypedSerialiser<std::decay_t<T>>::serialiseMember(format, member, noFlags);
 		order++;
 	}
 	template <typename T>
@@ -41,7 +42,7 @@ struct DummyObject : public ISerialisable {
 		auto got = format.nextObjectElement(noFlags);
 		if (*got != name)
 			throw ParseError("Expected " + name);
-		deserialiseMember(format, member, noFlags);
+		TypedSerialiser<T>::deserialiseMember(format, member, noFlags);
 	}
 
 	void serialiseInternal(IStructuredOutput& format, SerialisationFlags::Flags) const override {
@@ -70,6 +71,26 @@ struct DummyObject : public ISerialisable {
 		format.endReadingObject(noFlags);
 		return true;
 	}
+	void describe(IPropertyDescriptionFiller& filler) const override {
+		auto describeType = [&] (auto& variable) {
+			TypedSerialiser<std::decay_t<decltype(variable)>>::describeType(filler);
+		};
+		filler.addMember("edges", "so edgy", [&] { describeType(edges); });
+		filler.addMember("isRed", "better not be commie", [&] { describeType(isRed); });
+		filler.addMember("name", "gotta name it", [&] { describeType(name); });
+		filler.addMember("edgeSizes", "big edgy", [&] { describeType(edgeSizes); });
+		filler.addMember("ticks", "parasites or something", [&] { describeType(ticks); });
+		filler.addMember("tags", "<head>", [&] { describeType(tags); });
+		filler.addMember("notes", "written in a notepad", [&] { describeType(notes); });
+		filler.addMember("story", "put fanfic here", [&] { describeType(story); });
+	}
+	std::string_view getTypeName() const override {
+		return "DummyObject";
+	}
+	void listTypes(ISerialisableDescriptionFiller& filler) const override {
+		filler.fillMembers(getTypeName(),
+				[this] (IPropertyDescriptionFiller& filler) { describe(filler); });
+	}
 };
 
 struct StandardObject : Serialisable<StandardObject> {
@@ -77,6 +98,10 @@ struct StandardObject : Serialisable<StandardObject> {
 	short int subIndex = key<"sub_index"> = 7;
 	bool deleted = key<"deleted"> = true;
 	std::string contents = key<"contents"> = "Not much yet";
+};
+
+struct SuperStandardObject : Serialisable<SuperStandardObject> {
+	StandardObject child = key<"child">;
 };
 
 struct DummyRpcClass : IRemoteCallable {
@@ -107,6 +132,13 @@ struct DummyRpcClass : IRemoteCallable {
 				returned = response.readString(noFlags);
 			});
 			return returned;
+		}
+		void listTypes(ISerialisableDescriptionFiller&) const override {}
+		void generateDescription(IRemoteCallableDescriptionFiller& filler) const override {
+			filler.addMethod(parent()->childName(this), "Gets the stored message", [&] (IPropertyDescriptionFiller& filler) { },
+					[&] (IPropertyDescriptionFiller& filler) {
+				filler.addMember("stored", "the stored message", [&] { TypedSerialiser<std::string>::describeType(filler); });
+			});
 		}
 		using IRemoteCallable::IRemoteCallable;
 	} getMessage = this;
@@ -148,6 +180,12 @@ struct DummyRpcClass : IRemoteCallable {
 				response.readNull(noFlags);
 			});
 		}
+		void listTypes(ISerialisableDescriptionFiller&) const override {}
+		void generateDescription(IRemoteCallableDescriptionFiller& filler) const override {
+			filler.addMethod(parent()->childName(this), "Sets the time", [&] (IPropertyDescriptionFiller& filler) {
+				filler.addMember("new_time", "the new time", [&] { TypedSerialiser<int>::describeType(filler); });
+			}, [&] (IPropertyDescriptionFiller& filler) { });
+		}
 		using IRemoteCallable::IRemoteCallable;
 	} setTime = this;
 
@@ -175,6 +213,17 @@ struct DummyRpcClass : IRemoteCallable {
 		backup = newBackup;
 		setSelfAsParent(backup);
 	}
+	
+	
+	void listTypes(ISerialisableDescriptionFiller&) const override {}
+	void generateDescription(IRemoteCallableDescriptionFiller& filler) const override {
+		getMessage.generateDescription(filler);
+		setTime.generateDescription(filler);
+		if (backup)
+			filler.addSubobject("backup", [this] (IRemoteCallableDescriptionFiller& filler) {
+				backup->generateDescription(filler);
+			});
+	}
 };
 
 struct AdvancedRpcClass : RpcObject<AdvancedRpcClass> {
@@ -191,6 +240,24 @@ struct AdvancedRpcClass : RpcObject<AdvancedRpcClass> {
 	RpcMember<[] (int first = name("first"), int second = name("second")) {
 		return first + second;
 	}> sum = child<"sum">;
+};
+
+struct ComplexRpcMessage : Serialisable<ComplexRpcMessage> {
+	std::string message = key<"message">;
+	std::string author = key<"author">;
+};
+
+struct ComplexRpcClass : RpcObject<ComplexRpcClass> {
+	ComplexRpcMessage message;
+
+	RpcMember<[] (ComplexRpcClass* parent) {
+		return parent->message;
+	}> getMessage = child<"get_message">;
+
+	RpcMember<[] (ComplexRpcClass* parent, std::string newMessage = name("message"), std::string author = name("author")) {
+		parent->message.message = newMessage;
+		parent->message.author = author;
+	}> setMessage = child<"set_message">;
 };
 
 struct FakeHttp {
@@ -991,6 +1058,215 @@ R"~(<!doctype html>
 			fixture.methodClient.setMessage("Anonymous trolls are the most credible!");
 		}
 		std::cout << " average response time is " << fixture.server.averageResponseTime().count() << " ns" << std::endl;
+	}
+	
+	const std::string expectedManualObjectDescription =
+R"~({
+	"edges" : "number",
+	"isRed" : "boolean",
+	"name" : "string",
+	"edgeSizes" : [
+		"number"
+	],
+	"ticks" : [
+		[
+			"number"
+		]
+	],
+	"tags" : [
+		"string"
+	],
+	"notes" : "object",
+	"story" : "string"
+})~";
+
+	const std::string expectedAutomaticObjectDescription =
+R"~({
+	"index" : "number",
+	"sub_index" : "number",
+	"deleted" : "boolean",
+	"contents" : "string"
+})~";
+
+	const std::string expectedAutomaticSubtypesDescription =
+R"~({
+	"StandardObject" : {
+		"index" : "number",
+		"sub_index" : "number",
+		"deleted" : "boolean",
+		"contents" : "string"
+	}
+})~";
+
+	auto printObjectDescription = [&] (const IDescribableSerialisable& printed) {
+		std::string written;
+		JSON::Output jsonOutput(written);
+		jsonOutput.startWritingObject(SerialisationFlags::NONE, IStructuredOutput::UNKNOWN_SIZE);
+		JsonWspMembersDescription descriptionGenerator(jsonOutput);
+		printed.describe(descriptionGenerator);
+		jsonOutput.endWritingObject(SerialisationFlags::NONE);
+		return written;
+	};
+	
+	{
+		std::cout << "Testing object description through JSON-WSP" << std::endl;
+		DummyObject manual;
+		std::string written = printObjectDescription(manual);
+		doATest(written, expectedManualObjectDescription);
+		
+		StandardObject automatic;
+		written = printObjectDescription(automatic);
+		doATest(written, expectedAutomaticObjectDescription);
+		
+		written = automatic.getTypeName();
+		doATest(written, "StandardObject");
+		
+		SuperStandardObject super;
+		written.clear();
+		JSON::Output jsonOutput(written);
+		jsonOutput.startWritingObject(SerialisationFlags::NONE, IStructuredOutput::UNKNOWN_SIZE);
+		JsonWspTypeDescription description{jsonOutput};
+		super.listTypes(description);
+		jsonOutput.endWritingObject(SerialisationFlags::NONE);
+		doATest(written, expectedAutomaticSubtypesDescription);
+	}
+	
+	const std::string expectedRpcDescription =
+R"~({
+	"type" : "jsonwsp/description",
+	"version" : "1.0",
+	"servicename" : "Get Message and Set Time",
+	"url" : "getmessageandsettime.com",
+	"types" : {
+	},
+	"methods" : {
+		"get_message" : {
+			"doc_lines" : [
+				"Gets the stored message"
+			],
+			"params" : {
+			},
+			"ret_info" : {
+				"doc_lines" : [
+					"the stored message"
+				],
+				"type" : "string"
+			}
+		},
+		"set_time" : {
+			"doc_lines" : [
+				"Sets the time"
+			],
+			"params" : {
+				"new_time" : {
+					"def_order" : 1,
+					"doc_lines" : [
+						"the new time"
+					],
+					"type" : "number",
+					"optional" : false
+				}
+			},
+			"ret_info" : {
+				"doc_lines" : [],
+				"type" : null
+			}
+		}
+		"backup.get_message" : {
+			"doc_lines" : [
+				"Gets the stored message"
+			],
+			"params" : {
+			},
+			"ret_info" : {
+				"doc_lines" : [
+					"the stored message"
+				],
+				"type" : "string"
+			}
+		},
+		"backup.set_time" : {
+			"doc_lines" : [
+				"Sets the time"
+			],
+			"params" : {
+				"new_time" : {
+					"def_order" : 1,
+					"doc_lines" : [
+						"the new time"
+					],
+					"type" : "number",
+					"optional" : false
+				}
+			},
+			"ret_info" : {
+				"doc_lines" : [],
+				"type" : null
+			}
+		}
+	}
+})~";
+	
+	{
+		std::cout << "Testing method description through JSON-WSP" << std::endl;
+		DummyRpcClass rpc;
+		DummyRpcClass backup;
+		rpc.backup = &backup;
+		std::string description = describeInJsonWsp<std::string>(rpc, "getmessageandsettime.com", "Get Message and Set Time");
+		doATest(description, expectedRpcDescription);
+	}
+	
+	const std::string expectedComplexRpcDescription =
+R"~({
+	"type" : "jsonwsp/description",
+	"version" : "1.0",
+	"servicename" : "Store Messages with Author Names",
+	"url" : "readytofacespamfromcults.com",
+	"types" : {
+		"ComplexRpcMessage" : {
+			"message" : "string",
+			"author" : "string"
+		}
+	},
+	"methods" : {
+		"get_message" : {
+			"doc_lines" : [],
+			"params" : {
+			},
+			"ret_info" : {
+				"doc_lines" : [],
+				"type" : "ComplexRpcMessage"
+			}
+		},
+		"set_message" : {
+			"doc_lines" : [],
+			"params" : {
+				"message" : {
+					"def_order" : 1,
+					"doc_lines" : [],
+					"type" : "string",
+					"optional" : true
+				},
+				"author" : {
+					"def_order" : 2,
+					"doc_lines" : [],
+					"type" : "string",
+					"optional" : true
+				}
+			},
+			"ret_info" : {
+				"doc_lines" : [],
+				"type" : null
+			}
+		}
+	}
+})~";
+	
+	{
+		std::cout << "Testing complete description through JSON-WSP" << std::endl;
+		ComplexRpcClass rpc;
+		std::string description = describeInJsonWsp<std::string>(rpc, "readytofacespamfromcults.com", "Store Messages with Author Names");
+		doATest(description, expectedComplexRpcDescription);
 	}
 
 	std::cout << "Passed: " << (tests - errors) << " / " << tests << ", errors: " << errors << std::endl;

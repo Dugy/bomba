@@ -25,6 +25,8 @@ using SerialisingFunction = void(*)(IStructuredOutput& out, const ISerialisable*
 		int order, int offset, SerialisationFlags::Flags flags);
 using DeserialisingFunction = void(*)(IStructuredInput& in, ISerialisable* parent,
 		int offset, SerialisationFlags::Flags flags);
+using DescribingFunction = void(*)(IPropertyDescriptionFiller& filler);
+using TypeAddingFunction = void(*)(ISerialisableDescriptionFiller& filler);
 
 
 template <typename T, StringLiteral Name>
@@ -32,14 +34,29 @@ void serialiseWithOffset(IStructuredOutput& out, const ISerialisable* parent,
 			int order, int offset, SerialisationFlags::Flags flags) {
 	T& member = *reinterpret_cast<T*>(uint64_t(parent) + offset);
 	out.introduceObjectMember(flags, Name, order);
-	serialiseMember(out, member, flags);
+	TypedSerialiser<T>::serialiseMember(out, member, flags);
 }
 
 template <typename T, StringLiteral Name>
 void deserialiseWithOffset(IStructuredInput& in, ISerialisable* parent,
 			int offset, SerialisationFlags::Flags flags) {
 	T& member = *reinterpret_cast<T*>(uint64_t(parent) + offset);
-	deserialiseMember(in, member, flags);
+	TypedSerialiser<T>::deserialiseMember(in, member, flags);
+}
+
+template <typename T, StringLiteral Name>
+void describeMember(IPropertyDescriptionFiller& filler) {
+	filler.addMember(Name, "", [&] { TypedSerialiser<T>::describeType(filler); });
+}
+
+template <typename T>
+void addMemberType(ISerialisableDescriptionFiller& filler) {
+	if constexpr(std::is_base_of_v<IDescribableSerialisable, T>) {
+		T instance;
+		filler.fillMembers(instance.getTypeName(), [&instance] (IPropertyDescriptionFiller& filler) {
+			instance.describe(filler);
+		});
+	}
 }
 
 #ifndef NO_DEFECT_REPORT_2118
@@ -48,19 +65,27 @@ template <typename Child, int Index>
 struct SerialiserStorage {
 	friend constexpr SerialisingFunction serialiser(SerialiserStorage<Child, Index>);
 	friend constexpr DeserialisingFunction deserialiser(SerialiserStorage<Child, Index>);
+	friend constexpr DescribingFunction describer(SerialiserStorage<Child, Index>);
+	friend constexpr TypeAddingFunction typeAdder(SerialiserStorage<Child, Index>);
 	friend constexpr SerialisationFlags::Flags memberFlags(SerialiserStorage<Child, Index>);
 	friend constexpr auto name(SerialiserStorage<Child, Index>);
 	friend constexpr auto boolIfDeclared(SerialiserStorage<Child, Index>);
 };
 
-template <typename Child, int Index, SerialisingFunction Serialiser,
-		DeserialisingFunction Deserialiser, StringLiteral Name, SerialisationFlags::Flags Flags>
+template <typename Child, int Index, SerialisingFunction Serialiser, DeserialisingFunction Deserialiser,
+		DescribingFunction Describer, TypeAddingFunction TypeAdder, StringLiteral Name, SerialisationFlags::Flags Flags>
 struct SerialiserSaver {
 	friend constexpr SerialisingFunction serialiser(SerialiserStorage<Child, Index>) {
 		return Serialiser;
 	}
 	friend constexpr DeserialisingFunction deserialiser(SerialiserStorage<Child, Index>) {
 		return Deserialiser;
+	}
+	friend constexpr DescribingFunction describer(SerialiserStorage<Child, Index>) {
+		return Describer;
+	}
+	friend constexpr TypeAddingFunction typeAdder(SerialiserStorage<Child, Index>) {
+		return TypeAdder;
 	}
 	friend constexpr auto name(SerialiserStorage<Child, Index>) {
 		return Name;
@@ -75,20 +100,20 @@ struct SerialiserSaver {
 };
 
 template <typename Child, int Index /* set to 0*/, SerialisingFunction Serialiser,
-		DeserialisingFunction Deserialiser, StringLiteral Name,
-		SerialisationFlags::Flags Flags, typename SFINAE = void>
+		DeserialisingFunction Deserialiser, DescribingFunction Describer, TypeAddingFunction TypeAdder,
+		StringLiteral Name,	SerialisationFlags::Flags Flags, typename SFINAE = void>
 struct addMember {
 	constexpr static bool done = SerialiserSaver<Child, Index, Serialiser, Deserialiser,
-			Name, Flags>::instantiated;
+			Describer, TypeAdder, Name, Flags>::instantiated;
 };
 
 template <typename Child, int Index, SerialisingFunction Serialiser,
-		DeserialisingFunction Deserialiser, StringLiteral Name,
-		SerialisationFlags::Flags Flags>
-struct addMember<Child, Index, Serialiser, Deserialiser, Name, Flags, std::enable_if_t<
+		DeserialisingFunction Deserialiser, DescribingFunction Describer, TypeAddingFunction TypeAdder,
+		StringLiteral Name, SerialisationFlags::Flags Flags>
+struct addMember<Child, Index, Serialiser, Deserialiser, Describer, TypeAdder, Name, Flags, std::enable_if_t<
 			std::is_same_v<bool, decltype(boolIfDeclared(SerialiserStorage<Child, Index>()))>>> {
 	constexpr static bool done = addMember<Child, Index + 1, Serialiser, Deserialiser,
-			Name, Flags, void>::done;
+			Describer, TypeAdder, Name, Flags, void>::done;
 };
 
 template <typename Child, int Index = 0, typename SFINAE = void>
@@ -98,6 +123,8 @@ struct ObjectInfo {
 				SerialisationFlags::Flags flags, std::string_view memberName) {
 		in.skipObjectElement(flags);
 	}
+	static void describe(IPropertyDescriptionFiller&) {}
+	static void listTypes(ISerialisableDescriptionFiller&) {}
 	constexpr static int size = 0;
 	static std::array<int, size + Index>& getOffsets() {
 		static std::array<int, size + Index> offsets;
@@ -123,6 +150,14 @@ struct ObjectInfo<Child, Index, std::enable_if_t<
 		else
 			ObjectInfo<Child, Index + 1, void>::deserialise(in, parent, flags, memberName);
 	}
+	static void describe(IPropertyDescriptionFiller& filler) {
+		describer(store)(filler);
+		ObjectInfo<Child, Index + 1, void>::describe(filler);
+	}
+	static void listTypes(ISerialisableDescriptionFiller& filler) {
+		typeAdder(store)(filler);
+		ObjectInfo<Child, Index + 1, void>::listTypes(filler);
+	}
 	constexpr static int size = ObjectInfo<Child, Index + 1, void>::size + 1;
 	
 	static std::array<int, size + Index>& getOffsets() {
@@ -144,12 +179,14 @@ struct ObjectInfo<Child, Index, std::enable_if_t<
 #endif // not NO_DEFECT_REPORT_2118
 
 template <typename Child>
-class Serialisable : public ISerialisable {
+class Serialisable : public IDescribableSerialisable {
 
 #ifdef NO_DEFECT_REPORT_2118
 	struct Information {
 		SerialisingFunction serialiser;
 		DeserialisingFunction deserialiser;
+		DescribingFunction describer;
+		TypeAddingFunction typeLister;
 		const char* name;
 		SerialisationFlags::Flags flags;
 		int offset;
@@ -271,7 +308,7 @@ class Serialisable : public ISerialisable {
 		}
 		
 		template <typename T, size_t... Enumeration>
-		T makeType(std::index_sequence<Enumeration...>) {
+		T makeType(std::index_sequence<Enumeration...>) const {
 			return T(std::get<Enumeration>(_args)...);
 		}
 	public:
@@ -287,7 +324,7 @@ class Serialisable : public ISerialisable {
 #else
 		template <typename T>
 #endif
-		operator T() {
+		operator T() const {
 			if (Serialisable::_setupInstance) [[unlikely]] {
 				SerialisationSetupData& info = *Serialisable::_setupInstance;
 
@@ -311,12 +348,12 @@ class Serialisable : public ISerialisable {
 
 #ifdef NO_DEFECT_REPORT_2118
 				if (info.initState == InitialisationState::INITIALISING) {
-					info.result->push_back({&serialiseWithOffset<T, Name>,
-							&deserialiseWithOffset<T, Name>, Name.c_str()});
+					info.result->push_back({&serialiseWithOffset<T, Name>, &deserialiseWithOffset<T, Name>,
+							 &describeMember<T, Name>, &addMemberType<T>, Name.c_str()});
 				}
 #else
-				bool added = addMember<Child, 0, &serialiseWithOffset<T, Name>,
-						&deserialiseWithOffset<T, Name>, Name, Flags>::done;
+				bool added = addMember<Child, 0, &serialiseWithOffset<T, Name>, &deserialiseWithOffset<T, Name>,
+						 &describeMember<T, Name>, &addMemberType<T>, Name, Flags>::done;
 				added = !added && Serialisable::_setup; // Avoid unused variable warning and use the _setup
 #endif
 				info.index++;
@@ -346,8 +383,8 @@ protected:
 	template <StringLiteral Name, SerialisationFlags::Flags Flags = SerialisationFlags::NONE>
 	inline static constexpr Initialiser<Name, Flags> key = {};
 
-	virtual void serialiseInternal(IStructuredOutput& format,
-			SerialisationFlags::Flags flags) const {
+	void serialiseInternal(IStructuredOutput& format,
+			SerialisationFlags::Flags flags) const override {
 #ifdef NO_DEFECT_REPORT_2118
 		format.startWritingObject(flags, _setup.size());
 		for (int i = 0; i < int(_setup.size()); i++) {
@@ -360,8 +397,8 @@ protected:
 #endif
 		format.endWritingObject(flags);
 	}
-	virtual bool deserialiseInternal(IStructuredInput& format,
-			SerialisationFlags::Flags flags) {
+	bool deserialiseInternal(IStructuredInput& format,
+			SerialisationFlags::Flags flags) override {
 		format.startReadingObject(flags);
 		std::optional<std::string_view> name;
 		while ((name = format.nextObjectElement(flags))) {
@@ -396,8 +433,39 @@ protected:
 			memset(start, garbageNumber, sizeof(Child) - sizeof(Serialisable<Child>));
 		}
 	}
-	Serialisable(const Serialisable& other) = default;
-	Serialisable(Serialisable&& other) = default;
+	Serialisable(const Serialisable&) = default;
+	Serialisable(Serialisable&&) = default;
+	Serialisable& operator=(const Serialisable&) = default;
+	Serialisable& operator=(Serialisable&&) = default;
+
+public:
+	void describe(IPropertyDescriptionFiller& filler) const override {
+#ifdef NO_DEFECT_REPORT_2118
+			for (int i = 0; i < int(_setup.size()); i++) {
+				_setup[i].describer(filler);
+			}
+#else
+			ObjectInfo<Child>::describe(filler);
+#endif
+	}
+
+	std::string_view getTypeName() const override {
+		const char* name = typeid(Child).name(); // Resolved at compile time, should not need RTTI
+		while (*name != '\0' && !(*name >= 'a' && *name <= 'z') && !(*name >= 'A' && *name <= 'Z'))
+			name++;
+		if (*name == '\0')
+			name = "object";
+		return name;
+	}
+	void listTypes(ISerialisableDescriptionFiller& filler) const override {
+#ifdef NO_DEFECT_REPORT_2118
+			for (int i = 0; i < int(_setup.size()); i++) {
+				_setup[i].typeLister(filler);
+			}
+#else
+			ObjectInfo<Child>::listTypes(filler);
+#endif
+	}
 
 	virtual ~Serialisable() = default;
 };

@@ -69,11 +69,16 @@ struct IResponseReader {
 	using ChildGettingFunction = IRemoteCallable* (*)(const IRemoteCallable* self, int offset, std::string_view name);
 	using ChildNameGettingFunction = bool (*)(const IRemoteCallable* self, int offset, const IRemoteCallable* child,
 			Callback<void(std::string_view)> reaction);
+	using ArgumentAddingFunction = void (*)(IPropertyDescriptionFiller& filler, std::string_view name);
+	using SubtypesAddingFunction = void (*)(ISerialisableDescriptionFiller& filler);
+	using ChildDescribingFunction = void (*)(IRemoteCallableDescriptionFiller& filler);
 
 #ifdef NO_DEFECT_REPORT_2118
 	struct ChildRpcEntry {
 		ChildGettingFunction childGettingFunction = nullptr;
 		ChildNameGettingFunction childNameGettingFunction = nullptr;
+		SubtypesAddingFunction subtypesAddingFunction = nullptr;
+		ChildDescribingFunction childDescribingFunction = nullptr;
 		std::string_view name;
 		SerialisationFlags::Flags flags = SerialisationFlags::NONE;
 		int offset = -1;
@@ -87,13 +92,16 @@ struct IResponseReader {
 		friend constexpr SerialisationFlags::Flags flagsOf(SubclassAccess<Parent, Index>);
 		friend constexpr ChildGettingFunction childGetter(SubclassAccess<Parent, Index>);
 		friend constexpr ChildNameGettingFunction childNameGetter(SubclassAccess<Parent, Index>);
+		friend constexpr SubtypesAddingFunction subtypesAdder(SubclassAccess<Parent, Index>);
+		friend constexpr ChildDescribingFunction childDescriptor(SubclassAccess<Parent, Index>);
 		friend constexpr auto boolIfDeclared(SubclassAccess<Parent, Index>);
 
 		constexpr SubclassAccess() = default;
 	};
 
 	template <typename Parent, int Index, StringLiteral Name, SerialisationFlags::Flags Flags,
-			ChildGettingFunction ChildGetter, ChildNameGettingFunction ChildNameGetter>
+			ChildGettingFunction ChildGetter, ChildNameGettingFunction ChildNameGetter,
+			SubtypesAddingFunction SubtypesAdder, ChildDescribingFunction ChildDescriptor>
 	struct SubclassSaver {
 		friend int& childOffset(SubclassAccess<Parent, Index>) {
 			static int saved = -1;
@@ -111,6 +119,12 @@ struct IResponseReader {
 		friend constexpr ChildNameGettingFunction childNameGetter(SubclassAccess<Parent, Index>) {
 			return ChildNameGetter;
 		}
+		friend constexpr SubtypesAddingFunction subtypesAdder(SubclassAccess<Parent, Index>) {
+			return SubtypesAdder;
+		}
+		friend constexpr ChildDescribingFunction childDescriptor(SubclassAccess<Parent, Index>) {
+			return ChildDescriptor;
+		}
 		friend constexpr auto boolIfDeclared(SubclassAccess<Parent, Index>) {
 			return true;
 		}
@@ -118,16 +132,20 @@ struct IResponseReader {
 	};
 
 	template <typename Parent, int Index /* set to 0 */, StringLiteral Name, SerialisationFlags::Flags Flags,
-			ChildGettingFunction ChildGetter, ChildNameGettingFunction ChildNameGetter, typename SFINAE = void>
+			ChildGettingFunction ChildGetter, ChildNameGettingFunction ChildNameGetter,
+			SubtypesAddingFunction SubtypesAdder, ChildDescribingFunction childAdder, typename SFINAE = void>
 	struct AddChildRpc {
-		constexpr static int index = SubclassSaver<Parent, Index, Name, Flags, ChildGetter, ChildNameGetter>::instantiated;
+		constexpr static int index = SubclassSaver<Parent, Index, Name, Flags, ChildGetter,
+				ChildNameGetter, SubtypesAdder, childAdder>::instantiated;
 	};
 
 	template <typename Parent, int Index, StringLiteral Name, SerialisationFlags::Flags Flags,
-			ChildGettingFunction ChildGetter, ChildNameGettingFunction ChildNameGetter>
-	struct AddChildRpc<Parent, Index, Name, Flags, ChildGetter, ChildNameGetter, std::enable_if_t<
-			std::is_same_v<bool, decltype(boolIfDeclared(SubclassAccess<Parent, Index>()))>>> {
-		constexpr static int index = AddChildRpc<Parent, Index + 1, Name, Flags, ChildGetter, ChildNameGetter>::index + 1;
+			ChildGettingFunction ChildGetter, ChildNameGettingFunction ChildNameGetter,
+			SubtypesAddingFunction SubtypesAdder, ChildDescribingFunction childAdder>
+	struct AddChildRpc<Parent, Index, Name, Flags, ChildGetter, ChildNameGetter, SubtypesAdder, childAdder,
+			std::enable_if_t<std::is_same_v<bool, decltype(boolIfDeclared(SubclassAccess<Parent, Index>()))>>> {
+		constexpr static int index =
+				AddChildRpc<Parent, Index + 1, Name, Flags, ChildGetter, ChildNameGetter, SubtypesAdder, childAdder>::index + 1;
 	};
 
 	template <typename Parent, int Index>
@@ -143,6 +161,8 @@ struct IResponseReader {
 		static IRemoteCallable* instance(const IRemoteCallable* parent, std::string_view name) {
 			return nullptr;
 		}
+		static void listTypes(ISerialisableDescriptionFiller&) {}
+		static void describeChildren(IRemoteCallableDescriptionFiller&) {}
 	};
 
 	template <typename Parent, int Index>
@@ -161,34 +181,50 @@ struct IResponseReader {
 				return childGetter(accessor)(parent, offset, name);
 			return ChildAccess<Parent, Index + 1>::instance(parent, name);
 		}
+		static void listTypes(ISerialisableDescriptionFiller& filler) {
+			subtypesAdder(accessor)(filler);
+			return ChildAccess<Parent, Index + 1>::listTypes(filler);
+		}
+		static void describeChildren(IRemoteCallableDescriptionFiller& filler) {
+			childDescriptor(accessor)(filler);
+			return ChildAccess<Parent, Index + 1>::describeChildren(filler);
+		}
 	};
 #endif
 
 	struct RpcArgumentInfo {
-		const char* name = nullptr;
+		const char* name = nullptr; // std::string_view can't be volatile
 		SerialisationFlags::Flags flags = SerialisationFlags::NONE;
+		ArgumentAddingFunction argumentAdder = nullptr;
+		SubtypesAddingFunction subtypesAdder = nullptr;
 		void operator=(const RpcArgumentInfo& other) volatile {
 			name = other.name;
 			flags = other.flags;
+			argumentAdder = other.argumentAdder;
+			subtypesAdder = other.subtypesAdder;
 		}
 	};
 
 	struct RpcSetupData {
 		volatile RpcArgumentInfo* args = nullptr;
-		int argsSize = 0;
-		int argumentBeingSet = 0;
-		int argumentBeingFilled = 0;
-		std::jmp_buf jumpBuffer;
-		inline static thread_local RpcSetupData* instance;
+		volatile int argsSize = 0;
+		volatile int argumentBeingSet = 0;
+		volatile int argumentBeingFilled = 0;
+		std::jmp_buf jumpBuffer = {};
+		inline static thread_local RpcSetupData* volatile instance;
 
 		void noticeArg(RpcArgumentInfo&& value) {
-			argumentBeingFilled++;
+			argumentBeingFilled = argumentBeingFilled + 1;
 			if (argumentBeingFilled > argsSize)
 				std::longjmp(instance->jumpBuffer, true);
 
 			for (int i = argumentBeingSet + 1; i < argsSize; i++) {
-				if (!strcmp(value.name, args[i].name))
-					return;
+				for (int j = 0; true; j++) {
+					if (value.name[j] != args[i].name[j])
+						break;
+					else if (value.name[j] == '\0' && args[i].name[j] == '\0')
+						return;
+				}
 			}
 
 			// Add if not seen yet, then exit
@@ -280,7 +316,7 @@ namespace Detail {
 				callWithAPartOfArgs(std::make_index_sequence<std::tuple_size<Tuple>::value + 1>(),
 						std::tuple_cat(args, std::tuple<Detail::Omniconverter>{}));
 			}
-			auto setupData =  Detail::RpcSetupData::instance;
+			auto setupData = Detail::RpcSetupData::instance;
 			setupData->argumentBeingSet = std::tuple_size<Tuple>::value;
 			setupData->argumentBeingFilled = setupData->argumentBeingSet;
 			if (!setjmp(setupData->jumpBuffer)) {
@@ -323,7 +359,8 @@ namespace Detail {
 				return;
 			} else {
 				if (name == argumentInfo[Index].name)
-					deserialiseMember(in, std::get<ArgIndex>(args), SerialisationFlags::Flags(flags | argumentInfo[Index].flags));
+					TypedSerialiser<std::decay_t<decltype(std::get<ArgIndex>(args))>>::deserialiseMember(
+							in, std::get<ArgIndex>(args), SerialisationFlags::Flags(flags | argumentInfo[Index].flags));
 				else
 					setArg<ArgIndex + 1>(name, args, in, SerialisationFlags::Flags(flags | argumentInfo[Index].flags));
 			}
@@ -337,6 +374,30 @@ namespace Detail {
 				*retval = Lambda(std::get<indexes>(args)...);
 			}
 		}
+
+		constexpr static Detail::SubtypesAddingFunction subtypesAdder = [] (ISerialisableDescriptionFiller& filler) {
+			for (int i = 0; i < argumentInfoSize; i++) {
+				argumentInfo[i].subtypesAdder(filler);
+			}
+			if constexpr(!std::is_void_v<Returned>) {
+				TypedSerialiser<Returned>::listTypes(filler);
+			}
+		};
+
+		template <StringLiteral Name>
+		constexpr static Detail::ChildDescribingFunction childAdder = [] (IRemoteCallableDescriptionFiller& filler) {
+			filler.addMethod(Name, "", [] (IPropertyDescriptionFiller& paramFiller) {
+				for (int i = 0; i < argumentInfoSize; i++) {
+					argumentInfo[i].argumentAdder(paramFiller, argumentInfo[i].name);
+				}
+			}, [] (IPropertyDescriptionFiller& returnFiller) {
+				if constexpr(!std::is_void_v<Returned>) {
+					returnFiller.addMember("result", "", [&] {
+						TypedSerialiser<Returned>::describeType(returnFiller);
+					});
+				}
+			});
+		};
 
 		bool call(IStructuredInput* arguments, IStructuredOutput& result, Callback<> introduceResult,
 				Callback<void(std::string_view)>, std::optional<UserId>) const final override {
@@ -366,7 +427,7 @@ namespace Detail {
 				Returned returned;
 				callInternal(std::make_index_sequence<argsSize>(), &returned, input);
 				introduceResult();
-				serialiseMember(result, returned, Flags);
+				TypedSerialiser<Returned>::serialiseMember(result, returned, Flags);
 			}
 			return true;
 		}
@@ -377,7 +438,7 @@ namespace Detail {
 			SerialisationFlags::Flags flags = SerialisationFlags::Flags(Flags | argumentInfo[index].flags);
 			auto write = [&] () {
 				out.introduceObjectMember(flags, argumentInfo[index].name, index);
-				serialiseMember(out, first, flags);
+				TypedSerialiser<First>::serialiseMember(out, first, flags);
 			};
 			if constexpr(std::is_same_v<bool, First>) {
 				if (first || !(flags & SerialisationFlags::OMIT_FALSE))
@@ -398,7 +459,7 @@ namespace Detail {
 			} else {
 				Returned result;
 				responder->getResponse(token, [&](IStructuredInput& in) {
-					deserialiseMember(in, result, Flags);
+					TypedSerialiser<Returned>::deserialiseMember(in, result, Flags);
 				});
 				return result;
 			}
@@ -517,7 +578,13 @@ namespace Detail {
 		template <typename T>
 		operator T() const {
 			auto instance = Detail::RpcSetupData::instance;
-			instance->noticeArg(Detail::RpcArgumentInfo{name, flags});
+			constexpr ArgumentAddingFunction argAdder = [] (IPropertyDescriptionFiller& filler, std::string_view name) {
+				filler.addMember(name, "", [&] { TypedSerialiser<std::optional<T>>::describeType(filler); });
+			};
+			constexpr SubtypesAddingFunction subtypeAdder = [] (ISerialisableDescriptionFiller& filler) {
+				TypedSerialiser<T>::listTypes(filler);
+			};
+			instance->noticeArg(Detail::RpcArgumentInfo{name, flags, argAdder, subtypeAdder});
 			return {};
 		}
 	};
@@ -528,7 +595,7 @@ Detail::NamedFlagSetter name(const char* value) {
 }
 
 template <auto Func, SerialisationFlags::Flags Flags = SerialisationFlags::NONE>
-class RpcLambda : public Detail::RpcLambdaRedirector<Func, Flags, decltype(&decltype(Func)::operator())> {
+struct RpcLambda : public Detail::RpcLambdaRedirector<Func, Flags, decltype(&decltype(Func)::operator())> {
 	using Parent = typename Detail::RpcLambdaRedirector<Func, Flags, decltype(&decltype(Func)::operator())>::Parent;
 };
 
@@ -598,6 +665,28 @@ protected:
 #endif
 	}
 
+	void listTypes(ISerialisableDescriptionFiller& filler) const final override {
+#ifdef NO_DEFECT_REPORT_2118
+		for (auto& it : childEntries) {
+			it.subtypesAddingFunction(filler);
+		}
+		return nullptr;
+#else
+		return Detail::ChildAccess<Derived>::listTypes(filler);
+#endif
+	}
+
+	void generateDescription(IRemoteCallableDescriptionFiller& filler) const final override {
+#ifdef NO_DEFECT_REPORT_2118
+		for (auto& it : childEntries) {
+			it.childDescribingFunction(filler);
+		}
+		return nullptr;
+#else
+		return Detail::ChildAccess<Derived>::describeChildren(filler);
+#endif
+	}
+
 	template <StringLiteral Name>
 	inline static constexpr Detail::ChildObjectInitialisator<Derived, Name> child = {};
 
@@ -610,24 +699,28 @@ public:
 
 template <auto Func, SerialisationFlags::Flags Flags = SerialisationFlags::NONE>
 struct RpcMember : public RpcLambda<Func, Flags> {
-	template <typename Parent, StringLiteral Name>
-	RpcMember(Detail::ChildObjectInitialisator<Parent, Name> initialisator) {
+	using ParentClass = typename RpcLambda<Func, Flags>::Parent;
+	template <typename ParentObject, StringLiteral Name>
+	RpcMember(Detail::ChildObjectInitialisator<ParentObject, Name> initialisator) {
 #ifdef NO_DEFECT_REPORT_2118
 		static int offset = -1;
-		if (Parent::preparation) {
+		if (ParentObject::preparation) {
 			Detail::ChildRpcEntry entry;
 			entry.name = Name;
 			entry.childGettingFunction = childGetter;
 			entry.childNameGettingFunction = childNameGetter<Name>;
-			entry.offset = reinterpret_cast<intptr_t>(this) - reinterpret_cast<intptr_t>(Parent::setupInstance);
-			Parent::preparation->push_back(entry);
+			entry.subtypesAddingFunction = ParentClass::subtypesAdder;
+			entry.childDescribingFunction = ParentClass::childAdder;
+			entry.offset = reinterpret_cast<intptr_t>(this) - reinterpret_cast<intptr_t>(ParentObject::setupInstance);
+			ParentObject::preparation->push_back(entry);
 			offset = entry.offset;
 		}
 #else
-		constexpr int parentIndex = Detail::AddChildRpc<Parent, 0, Name, Flags, childGetter, childNameGetter<Name>>::index;
-		int& offset = Detail::getChildOffset<Parent, parentIndex>();
+		constexpr int parentIndex = Detail::AddChildRpc<ParentObject, 0, Name, Flags, childGetter, childNameGetter<Name>,
+				ParentClass::subtypesAdder, ParentClass::template childAdder<Name> >::index;
+		int& offset = Detail::getChildOffset<ParentObject, parentIndex>();
 		if (offset == -1) [[unlikely]] {
-			offset = reinterpret_cast<intptr_t>(this) - reinterpret_cast<intptr_t>(Parent::setupInstance);
+			offset = reinterpret_cast<intptr_t>(this) - reinterpret_cast<intptr_t>(ParentObject::setupInstance);
 		}
 #endif
 		auto parent = reinterpret_cast<Detail::RpcObjectCommon*>(reinterpret_cast<intptr_t>(this) - offset);
@@ -638,6 +731,7 @@ private:
 	constexpr static Detail::ChildGettingFunction childGetter = [] (const IRemoteCallable* parent, int offset, std::string_view name) {
 		return reinterpret_cast<IRemoteCallable*>(reinterpret_cast<intptr_t>(parent) + offset);
 	};
+
 	template <StringLiteral Name>
 	constexpr static Detail::ChildNameGettingFunction childNameGetter = [] (const IRemoteCallable* parent, int offset,
 			const IRemoteCallable* child, Callback<void(std::string_view)> actionIfReal) {
