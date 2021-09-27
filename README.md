@@ -1,15 +1,15 @@
 # Bomba
-C++20 library for convenient implementation of remote procedure calls and serialisation. Currently, it's a work in progress, not all intended components are implemented, there may be security issues or messy error handling.
+C++20 library for convenient implementation of remote procedure calls and serialisation. Currently, it's a work in progress, it's usable, but there may be bugs, security issues or messy error handling.
 
-For maximal convenience, it needs no code generation and no macros and is entirely header-only, yet its verbosity is at minimum.
+To maximise convenience, it needs no code generation and no macros and is entirely header-only, yet its verbosity is at minimum.
 
-It's written in bleeding edge C\++20. Works on GCC 11, Clang 12 or MSVC 19. Before C\++23 reflection (`reflexpr` expression) is available, a GCC-only trick relying on Defect Report 2118 is used. Clang and MSVC have to use a different implementation with slighly worse performance. It's embedded-friendly as it can be used without any dynamic allocation when compiled by GCC and it needs dynamic allocation only during initialisation if compiled with Clang or MSVC). Currently the only available implementation of the networking layer is based on `std::experimental::networking` and uses some dynamic allocation, so it's PC-only.
+It's written in bleeding edge C\++20. Works on GCC 12, Clang 13 or MSVC 19. Before C\++23 reflection (`reflexpr` expression) is available, a GCC-only trick relying on Defect Report 2118 is used. Clang and MSVC have to use a different implementation with slighly worse performance. It's intended to be embedded-friendly as it can be used without any dynamic allocation when compiled by GCC and it needs dynamic allocation only during initialisation if compiled with Clang or MSVC). Currently the only available implementation of the networking layer is based on `std::experimental::networking` and uses some dynamic allocation, so that part (about 130 lines) might need reimplementation if used outside PC architectures.
 
 ## Features
-Bomba is not feature complete, but is already usable for some purposes.
+Bomba is fully usable, but some additional features are planned.
 
 ### Protocols
-Bomba implements several communication protocols for the purpose of communication in a standardised way supported by many other libraries. These are implemented in a way that avoids dynamic allocation, expecting the networking layer to make the necessary allocations (so that some buffers could be provided in a restrictive embedded environment).
+Bomba implements several communication protocols for the purpose of communication in a standardised way supported by many other libraries. These are implemented in a way that avoids dynamic allocation, expecting the networking layer to provide buffers (so that some buffers could be provided in a restrictive embedded environment).
 * HTTP - Minimal implementation, supporting only GET and POST, but usable as a web server with some interactive content
 * JSON-RPC - Built on top of HTTP POST
 
@@ -40,9 +40,9 @@ Less common problems like parse errors are handled by exceptions. The class repr
 
 JSON-RPC handles all `std::exception` instances, converting them to JSON-RPC errors. The exact error code shown might not be completely accurate because the specification is not very clear about it and I chose to interpret it in a way that's the most convenient the implement.
 
-The networking client throws an exception if the call fails so that an incorrect response is not returned. Thus, an exception in the server is propagated to the client (the exact type of exception will not be retained, obviously)
+The networking client throws an exception if the call fails so that an incorrect response is not returned. Thus, an exception in the server is propagated to the client (the exact type of exception will not be retained, obviously).
 
-It was experimentally determined that an exception adds 5 - 10 microseconds the processing of a request, which does not lead to a drastic slowdown. This choice is based on optimisation for successful calls and the atrocious verbosity of checking error codes after every function call.
+It was experimentally determined that an exception adds 5 - 10 microseconds the processing of a request, which does not lead to a drastic slowdown. I chose this option to optimise for successful calls and because of the atrocious verbosity of checking error codes after every function call.
 
 If there is a very strong reason not to use exceptions, it's intended to be avoidable. Exceptions are always called by functions that throw them and these functions can be replaced if some macros are set. This will not cause stack unwinding and is not debugged or tested yet.
 
@@ -287,6 +287,41 @@ Bomba::BackgroundTcpServer<decltype(jsonRpcServer)> server = {&jsonRpcServer, 80
 server.run();
 ```
 
+#### A JSON-RPC server that can provide its documentation and web content
+The JSON-RPC protocol does not specify a format for describing the API, so a similar protocol's documentation can be generated to describe the API in good detail.
+```C++
+#include <string>
+#include "bomba_tcp_server.hpp"
+#include "bomba_http.hpp"
+#include "bomba_rpc_object.hpp"
+#include "bomba_json_rpc.hpp"
+#include "bomba_caching_file_server.hpp"
+#include "bomba_json_wsp_description.hpp"
+
+struct RpcClass : Bomba::RpcObject<RpcClass> {
+	std::string message;
+
+	Bomba::RpcMember<[] (AdvancedRpcClass* parent) {
+		return parent->message;
+	}> getMessage = child<"get_message">;
+
+	Bomba::RpcMember<[] (AdvancedRpcClass* parent, std::string newMessage = Bomba::name("message")) {
+		parent->message = newMessage;
+	}> setMessage = child<"set_message">;
+};
+
+int main(int argc, char** argv) {
+	RpcClass method;
+	std::string description = describeInJsonWsp<std::string>(method, "keeping-message.com", "Bomba test");
+
+	Bomba::CachingFileServer cachingFileServer("public_html");
+	cachingFileServer.addGeneratedFile("api_description.json", description);
+	Bomba::JsonRpcServer<std::string, Bomba::CachingFileServer> jsonRpc(&method, &cachingFileServer);
+	Bomba::TcpServer server(&jsonRpc, 8080);
+	server.run();
+}
+```
+
 ### Clients
 Implementing a better client than `Bomba::SyncNetworkClient` might allow more functionality, but it should be good enough for convenient synchronous requests.
 
@@ -301,11 +336,11 @@ Bomba::SyncNetworkClient client("0.0.0.0", "8080");
 Bomba::HttpClient<> http(&client, "0.0.0.0");
 auto identifier = http.get("/");
 // Can do other stuff here, like send more requests
-http.getResponse(identifier, Bomba::makeCallback([](std::span<char> response) {
+http.getResponse(identifier, [](std::span<char> response) {
 	std::cout << "Page is:" << std::endl;
 	std::cout << std::string_view(response.data(), response.size()) << std::endl;
 	return true;
-}));
+});
 ```
 
 #### Calling an RPC method through HTTP
@@ -367,6 +402,32 @@ std::string newMessage;
 std::getline(std::cin, newMessage);
 remote.setMessage(newMessage);
 ```
+
+#### JavaScript client
+This part assumes the server code [can provide its generated documentation](#a-json-rpc-server-that-can-provide-its-documentation-and-web-content) and needs the `bomba.js` file provided in the `public_html` folder.
+
+```JavaScript
+let bombaGenerator = await import("./bomba.js");
+[bomba, bomba.types, bomba.serviceName] = await bombaGenerator.loadApi();
+bomba.set_message("Some stuff");
+console.log(bomba.get_message());
+```
+
+The functions provided by the server will be accessed through the `bomba` namespace (or however else you call it). The code will work in browsers out of the box. In Node.js, the `node-fetch` package is needed to access the `fetch` function that it's missing, the `--experimental-repl-await` flag to get access to `await` in the CLI and a correct path to the file. This can be used to give your program a scripting interface.
+
+The other two arguments returned by the `loadApi()` function are a table of classes used in the API and the name of the service.
+
+#### Web-based GUI
+It's possible to generate a GUI to quickly give your program a convenient remote interface. It simply reflects the functions' signatures, nothing more advanced is implemented (not even CSS at the moment).
+
+```JavaScript
+let bombaGenerator = await import("./bomba.js");
+[bomba, bomba.types, bomba.serviceName] = await bombaGenerator.loadApi();
+document.getElementById("body").appendChild(bomba.gui());
+```
+To obtain a single function's GUI, you can call `bomba.set_message.gui()`. I plan to add more customisation to this.
+
+A GUI that works out of the box is provided by the `index.html` file in the `public_html` folder, so you can have a quick and dirty GUI with C++ only.
 
 ### Custom string type
 If you can't use `std::string` for some reasons (like restrictions regarding dynamic allocation), you can define your own string type (assuming it's called `String`) and serialise JSON as `Bomba::BasicJson<String>`. I recommend aliasing that type with `using`.

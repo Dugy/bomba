@@ -56,10 +56,14 @@ struct HttpParseState {
 			std::string_view property = readWordUntil(':');
 			if (property.empty())
 				break; // End of header
+			for (const char& letter : property) {
+				if (letter >= 'A' && letter <= 'Z') // tolower for ASCII, must be case insensitive
+					const_cast<char&>(letter) += 'a' - 'A';
+			}
 			while (input[position] == ' ')
 				position++;
 			std::string_view value = readWordUntil('\r');
-			if (property == "Content-Length") {
+			if (property == "content-length") {
 				std::from_chars(&*value.begin(), &*value.end(), bodySize);
 			} else headerReader(property, input, value.data() - input.data(), value.size());
 		}
@@ -592,9 +596,9 @@ public:
 				return true;
 			};
 			auto headerReader = [&] (std::string_view property, std::span<char> input, int valueOffset, int valueSize) {
-				if (property == "Content-Type") {
+				if (property == "content-type") {
 					_contentType = std::pair<int, int>(valueOffset, valueSize);
-				} else if (property == "Connection") {
+				} else if (property == "connection") {
 					std::string_view value = {input.data() + valueOffset, size_t(valueSize)};
 					if (value == "close")
 						_ending = ServerReaction::DISCONNECT;
@@ -636,7 +640,7 @@ public:
 					startedResponse = true;
 					response += correctIntro;
 					response += unsetSize;
-					response += "\r\nContentType: ";
+					response += "\r\nContent-Type: ";
 					response += contentType;
 					response += "\r\n\r\n";
 					headerSize = response.size();

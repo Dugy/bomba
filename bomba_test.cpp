@@ -809,7 +809,7 @@ R"~(<!doctype html>
 	const std::string sentHtml =
 			"HTTP/1.1 200 OK\r\n"
 			"Content-Length: 197\r\n"
-			"ContentType: text/html\r\n"
+			"Content-Type: text/html\r\n"
 			"\r\n"
 			"<!doctype html>\n"
 			"<html lang=en>\n"
@@ -992,7 +992,7 @@ R"~(<!doctype html>
 	const std::string expectedJsonRpcResponse =
 					"HTTP/1.1 200 OK\r\n"
 					"Content-Length: 48\r\n"
-					"ContentType: application/json\r\n\r\n"
+					"Content-Type: application/json\r\n\r\n"
 					"{\n"
 					"	\"jsonrpc\" : \"2.0\",\n"
 					"	\"id\" : 1\n,"

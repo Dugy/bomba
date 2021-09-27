@@ -11,6 +11,7 @@
 #include <shared_mutex>
 #include <fstream>
 #include <iterator>
+#include <functional>
 
 namespace Bomba {
 
@@ -20,9 +21,22 @@ class CachingFileServer {
 	struct CachedFile {
 		std::string type;
 		std::vector<char> contents;
+
+		CachedFile(const std::filesystem::path& path, CachingFileServer* parent) {
+			std::string extension = path.extension().string();
+			for (char& c : extension)
+				c = std::tolower(c);
+			auto foundExtension = parent->_extensions.find(extension);
+			if (foundExtension != parent->_extensions.end()) {
+				type = foundExtension->second;
+			} else {
+				type = "application/" + extension.substr(1); // Improvise if unknown
+			}
+		}
 	};
 	std::unordered_map<std::string, std::string> _extensions;
 	std::unordered_map<std::string, CachedFile> _cache;
+	std::vector<std::function<void()>> _modifiers;
 	std::shared_mutex _mutex;
 
 
@@ -39,16 +53,7 @@ class CachingFileServer {
 	void cacheFile(const std::filesystem::path& path, std::string_view localPath) {
 		if (localPath == "/index.html")
 			cacheFile(path, "/");
-		std::string extension = path.extension().string();
-		for (char& c : extension)
-			c = std::tolower(c);
-		CachedFile entry;
-		auto foundExtension = _extensions.find(extension);
-		if (foundExtension != _extensions.end()) {
-			entry.type = foundExtension->second;
-		} else {
-			entry.type = "application/" + extension.substr(1); // Improvise if unknown
-		}
+		CachedFile entry(path, this);
 
 		std::ifstream file(path, std::ios::binary);
 		file.unsetf(std::ios::skipws);
@@ -58,6 +63,17 @@ class CachingFileServer {
 		entry.contents.insert(entry.contents.begin(), std::istream_iterator<char>(file), std::istream_iterator<char>());
 
 		_cache.insert(std::make_pair(localPath, std::move(entry)));
+	}
+	void reloadInternal() {
+		_cache.clear();
+		cacheFolder(_root, "");
+		for (auto& modifier : _modifiers) {
+			modifier();
+		}
+	}
+	void addModifier(std::function<void()>&& modifier) {
+		modifier();
+		_modifiers.emplace_back(std::move(modifier));
 	}
 
 public:
@@ -91,8 +107,23 @@ public:
 	}
 	void reload() {
 		std::lock_guard lock(_mutex);
-		_cache.clear();
-		cacheFolder(_root, "");
+		reloadInternal();
+	}
+	void reset() {
+		std::lock_guard lock(_mutex);
+		_modifiers.clear();
+		reloadInternal();
+	}
+	void addGeneratedFile(std::string_view name, std::vector<char>&& contents) {
+		addModifier([this, name = '/' + std::string(name), contents = std::move(contents)] {
+			CachedFile entry(name, this);
+			entry.contents = contents;
+			_cache.insert(std::make_pair(name, std::move(entry)));
+		});
+	}
+	void addGeneratedFile(std::string_view name, const std::string& contents) {
+		std::vector<char> contentsVec = {contents.begin(), contents.end()};
+		addGeneratedFile(name, std::move(contentsVec));
 	}
 };
 

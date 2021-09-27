@@ -106,6 +106,12 @@ struct BasicJson {
 			_position += got.ptr - &_contents[_position];
 			if (got.ec != std::errc()) [[unlikely]]
 				fail("Expected JSON integer");
+			// Deal with floats sent instead of integers
+			char next = peekChar();
+			while ((next >= '0' && next <= '9') || next == '.' || next == 'e' || next == 'E' || next == '-') {
+				_position++;
+				next = peekChar();
+			}
 			return result;
 		}
 		double readFloat(Flags flags) final override {

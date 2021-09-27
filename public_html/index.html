@@ -1,0 +1,19 @@
+<!DOCTYPE html><html>
+<head>
+	<meta charset="utf-8"/>
+	<title>Bomba Placeholder</title>
+	<link rel="stylesheet" href="css/styles.css">
+</head>
+<body class="body" id="body">
+	<h1 class="general" id="title"></h1>
+	<script>
+		async function load() {
+			let bombaGenerator = await import("./bomba.js");
+			[bomba, bomba.types, bomba.serviceName] = await bombaGenerator.loadApi();
+			document.getElementById("title").textContent = bomba.serviceName;
+			document.title = bomba.serviceName;
+			document.getElementById("body").appendChild(bomba.gui());
+		}
+		load();
+	</script>
+</body></html>

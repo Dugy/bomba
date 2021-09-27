@@ -40,7 +40,6 @@ class TcpServer {
 				_socket.send(Net::buffer(output.data(), output.size()));
 			});
 			if (reaction == ServerReaction::DISCONNECT) {
-				cancel();
 				return reaction;
 			}
 			if (reaction == ServerReaction::OK) {
