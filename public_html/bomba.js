@@ -3,7 +3,7 @@ async function getJson(target, basePath = "", extraParams) {
 		if (!basePath) {
 			basePath = 'http://0.0.0.0:8080/';
 		}
-		if (typeof getJson.fetch === "undefined") {
+		if (getJson.fetch === undefined) {
 			getJson.fetch = (...args) => import("node-fetch").then(({default: fetch}) => fetch(...args));
 		}
 		const data = await getJson.fetch(basePath + target, extraParams);
@@ -15,27 +15,27 @@ async function getJson(target, basePath = "", extraParams) {
 }
 
 function humanise(source) {
-	if (source.length == 0)
+	if (source.length === 0)
 		return "";
 	const isUpperCase = (character) => {
-		return character.toUpperCase() == character;
+		return character.toUpperCase() === character;
 	}
 	const isLowerCase = (character) => {
-		return character.toLowerCase() == character;
+		return character.toLowerCase() === character;
 	}
-	let result = source[0].toUpperCase(); 
+	let result = source[0].toUpperCase();
 	for (let i = 1; i < source.length; i++) {
-		if (source[i] == "_")
+		if (source[i] === "_")
 			result += " ";
 		else if (isUpperCase(source[i])) {
-			if (!isUpperCase(source[i - 1])) {
+			if (i > 0 && !isUpperCase(source[i - 1])) {
 				result += " ";
 			}
 
 			if (i + 1 >= source.length || isUpperCase(source[i + 1])) {
-				result += source[i];	  
+				result += source[i];
 			} else {
-				if (isUpperCase(source[i - 1])) {
+				if (i > 0 && isUpperCase(source[i - 1])) {
 					result += " ";
 				}
 				result += source[i].toLowerCase();
@@ -43,13 +43,13 @@ function humanise(source) {
 		} else {
 			result += source[i];
 		}
-	}
+	};
 	return result;
 }
 	
 function extractType(type) {
 	if (Array.isArray(type) && type.length > 0 ) {
-		let extracted = extractType(type[0]);
+		const extracted = extractType(type[0]);
 		return `[${extracted}]`;			
 	} else
 		return type;
@@ -57,32 +57,51 @@ function extractType(type) {
 
 function makeGuiForArg(name, type, identifier, types) {
 	const typeObtained = type ?? identifier.type;
-	let space = document.createElement("div");
-	if (typeObtained == "boolean") {
-		let checkbox = document.createElement("input");
-		checkbox.setAttribute("type", "checkbox");
-		checkbox.textContent = humanise(name);
-		return [space, () => { checkbox.checked; }];
+	if (typeObtained === "boolean") {
+		const box = document.createElement("label");
+		box.className = "bombaCheckboxBox";
+		box.textContent = humanise(name);
+		const checkbox = document.createElement("input");
+		checkbox.type = "checkbox";
+		box.appendChild(checkbox);
+		checkbox.className = "bombaCheckbox";
+		const label = document.createElement("label");
+		label.className = "bombaCheckboxVisual";
+		box.appendChild(label);
+		return [box, () => { return checkbox.checked; }];
 	}
 	
-	space.textContent = humanise(name);
-	if (typeObtained == "number" || typeObtained == "string") {
-		let field = document.createElement("input");
-		if (typeObtained == "number")
+	if (typeObtained === "number" || typeObtained === "string") {
+		const space = document.createElement("div");
+		space.className = "bombaInputBox";
+		const field = document.createElement("input");
+		field.setAttribute("required", "");
+		if (typeObtained === "number")
 			field.setAttribute("type", "number");
 		space.appendChild(field);
-		let getValue = () => {
-			if (typeObtained == "number")
+		const getValue = () => {
+			if (typeObtained === "number")
 				return parseFloat(field.value);
 			else
 				return field.value;
 		};
+		
+		const label = document.createElement("label");
+		label.textContent = humanise(name);
+		space.appendChild(label);
+	
 		return [space, getValue];
 	} else if (Array.isArray(typeObtained)) {
+		const space = document.createElement("div");
 		return [space, () => { return []; }];
 	} else {
+		const space = document.createElement("fieldset");
+		space.className = "bombaFrame";
+		const legend = document.createElement("legend");
+		legend.textContent = humanise(name);
+		space.appendChild(legend);
 		const made = new types[typeObtained];
-		let [element, getter] = made.gui();
+		const [element, getter] = made.gui();
 		space.appendChild(element);
 		return [space, getter];
 	}
@@ -90,13 +109,13 @@ function makeGuiForArg(name, type, identifier, types) {
 }
 	
 function makeCheckIfExpectedType(name, described) {
-	if (described == "number") {
+	if (described === "number") {
 		return `if (typeof ${name} != "number") { throw "${name} must be a number" }`;
-	} else if (described == "string") {
+	} else if (described === "string") {
 		return `if (typeof ${name} != "string") { throw "${name} must be a string" }`;
-	} else if (described == "boolean") {
+	} else if (described === "boolean") {
 		return `if (typeof ${name} != "boolean") { throw "${name} must be a boolean" }`;
-	} else if (typeof type == "object" && Array.isArray(type)) {
+	} else if (typeof type === "object" && Array.isArray(type)) {
 		let result = `if (typeof ${name} != "object" || Array.isArray(${name})) { throw "${name} must be an array" } `;
 		result += `for (let i = 0; i < ${name}.length; i++) { ${ makeCheckIfExpectedType(name + "[i]", described[0]) } }`;
 	} else {
@@ -111,20 +130,19 @@ function generateApiClass(name, definition, types) {
 		code += ` * @param {${extractType(type)}} ${name}\n`;
 	}
 	code += " */\n\tconstructor("
-	let index = 0;
-	for (const [name, type] of Object.entries(definition)) {
+	Object.entries(definition).forEach( ([name, type], index) => {
 		if (index != 0) {
 			code += ", ";
 		}
 		code += `arg_${name} = `;
-		if (type == "number") code += "0";
-		else if (type == "string") code += "''";
-		else if (type == "boolean") code += "false";
-		else if (typeof type == "object" && Array.isArray(type)) code += "[]";
+		if (type === "number") code += "0";
+		else if (type === "string") code += "''";
+		else if (type === "boolean") code += "false";
+		else if (typeof type === "object" && Array.isArray(type)) code += "[]";
 		else code += "null";
 		index++;
-	}
-	code += ") {\n"
+	});
+	code += ") {\n";
 	for (const [name, type] of Object.entries(definition)) {
 		code += `\t\tthis.${name} = arg_${name}\n`;
 	}
@@ -140,6 +158,7 @@ function generateApiClass(name, definition, types) {
 	
 	code += "\tgui() {\n"
 	code += "\t\tlet container = document.createElement('div')\n";
+	code += "\t\tcontainer.className = 'bombaObjectBox'\n";
 	code += "\t\tlet valueGetters = []\n";
 	for (const [name, type] of Object.entries(definition)) {
 		code += `\t\tlet [elem_${name}, getter_${name}] = makeGuiForArg("${ humanise(name) }", "${type}", undefined, types)\n`;
@@ -150,13 +169,13 @@ function generateApiClass(name, definition, types) {
 	
 	code += "\t}\n})";
 
-	let made = eval(code);
+	const made = eval(code);
 	made.source = code;
 	return made;
 }
 
 function generateApiCall(name, argNames, argDefinitions, docLines, returnInfo, path) {
-	if (typeof generateApiCall.messageIndex === "undefined") {
+	if (generateApiCall.messageIndex === undefined) {
 		generateApiCall.messageIndex = 0;
 	}
 	
@@ -175,7 +194,7 @@ function generateApiCall(name, argNames, argDefinitions, docLines, returnInfo, p
 	
 	code += " */\nasync (";
 	for (let i = 0; i < argNames.length; i++) {
-		if (i != 0) {
+		if (i !== 0) {
 			code += ", ";
 		}
 		code += `arg_${argNames[i]}`;
@@ -186,10 +205,10 @@ function generateApiCall(name, argNames, argDefinitions, docLines, returnInfo, p
 	code += "\tgenerateApiCall.messageIndex++\n";
 	for (let i = 0; i < argNames.length; i++) {
 		if (argDefinitions[i].optional) {
-			code += `\tif (typeof arg_${argNames[i]} != 'undefined') `;
+			code += `\tif (arg_${argNames[i]} != undefined) `;
 		}
 		code += `\t{\n\t\t${ makeCheckIfExpectedType(`arg_${argNames[i]}`, argDefinitions[i].type) }\n`;
-		code += `\t\tif (typeof arg_${argNames[i]} == "object" && typeof arg_${argNames[i]}.constructor.name == "string")\n`;
+		code += `\t\tif (typeof arg_${argNames[i]} === "object" && typeof arg_${argNames[i]}.constructor.name === "string")\n`;
 		code += `\t\t\trequest.params.${argNames[i]} = arg_${argNames[i]}.toJson()\n`;
 		code += `\t\trequest.params.${argNames[i]} = arg_${argNames[i]}\n`;
 		code += "\t}\n";
@@ -206,43 +225,53 @@ function generateApiCall(name, argNames, argDefinitions, docLines, returnInfo, p
 }
 
 function generateApiCallGui(callee, name, argNames, argDefinitions, types) {
-	let questionnaire = document.createElement("details");
+	const questionnaire = document.createElement("details");
+	questionnaire.className = "bombaQuestionnaire";
 	questionnaire.open = true;
-	let summary = document.createElement("summary");
-	let text = humanise(name);
+	const summary = document.createElement("summary");
+	const text = humanise(name);
 	summary.textContent = text;
 	questionnaire.appendChild(summary);
 	
-	let argGetters = [];
+	const argGetters = [];
 	for (let i = 0; i < argNames.length; i++) {
 		let [element, argGetter] = makeGuiForArg(argNames[i], undefined, argDefinitions[i], types);
 		argGetters.push(argGetter);
 		questionnaire.appendChild(element);
 	}
 	
-	let button = document.createElement("button");
-	let resultSpace = document.createElement("div");
+	const buttonSpace = document.createElement("div");
+	buttonSpace.className = "bombaButtonSpace";
+	const resultSpace = document.createElement("div");
+	resultSpace.className = "bombaResultSpace";
+	buttonSpace.appendChild(resultSpace);
+	const resultTitle = document.createElement("div");
+	resultTitle.textContent = "Result";
+	resultTitle.className = "bombaResultTitle";
+	buttonSpace.appendChild(resultTitle);
+	
+	const button = document.createElement("button");
 	button.innerHTML = text;
-	button.onclick = async function () {
+	button.onclick = async () => {
 		let args = [];
 		for (const getter of argGetters) {
 			args.push(getter());
 		}
 		const result = await callee(...args);
 		const resultString = String(result);
-		if (typeof resultString == "string" && resultString != "null")
+		if (resultString !== "null") // Don't show the result if it's not worth showing
 			resultSpace.textContent = resultString;
 	};
+	buttonSpace.appendChild(button);
+	questionnaire.appendChild(buttonSpace);
 	
-	questionnaire.appendChild(button);
-	questionnaire.appendChild(resultSpace);
 	return questionnaire;
 }
 
 export async function loadApi(path) {
 	const description = await getJson("api_description.json");
-	let api = {};
-	let types = {};
+	const api = {};
+	const types = {};
 	
 	for (const [name, members] of Object.entries(description.types)) {
 		types[name] = generateApiClass(name, members, types);
@@ -255,7 +284,7 @@ export async function loadApi(path) {
 		let argDefinitions = [];
 		for (let i = 0; i < Object.keys(method.params).length; i++) {
 			for (const [argName, argDefinition] of Object.entries(method.params)) {
-				if (argDefinition.def_order == i + 1) {
+				if (argDefinition.def_order === i + 1) {
 					argNames.push(argName);
 					argDefinitions.push(argDefinition);
 					break;
@@ -263,19 +292,19 @@ export async function loadApi(path) {
 			}
 		}
 		
-		let made = generateApiCall(name, argNames, argDefinitions, method.doc_lines, method.ret_info, path);
+		const made = generateApiCall(name, argNames, argDefinitions, method.doc_lines, method.ret_info, path);
 		made.gui = () => generateApiCallGui(made, name, argNames, argDefinitions, types);
 		
-		for (let i = 0; i < nameParts.length; i++) {
-			if (i == nameParts.length - 1) {
-				subApi[nameParts[i]] = made;
+		nameParts.forEach( (part, index) => {
+			if (index === nameParts.length - 1) {
+				subApi[part] = made;
 			} else {
-				if (typeof subApi[nameParts[i]] === "undefined") {
-					subApi[nameParts[i]] = {};
+				if (subApi[part] === undefined) {
+					subApi[part] = {};
 				}
-				subApi = subApi[nameParts[i]];
+				subApi = subApi[part];
 			}
-		}
+		});
 	}
 	
 	const makeApiGuiGenerator = (api, name) => {

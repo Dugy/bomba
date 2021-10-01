@@ -12,6 +12,7 @@
 struct RpcMessage : Bomba::Serialisable<RpcMessage> {
 	std::string message = key<"message">;
 	std::string author = key<"author">;
+	bool nsfw = key<"nsfw">;
 };
 
 struct AdvancedRpcClass : Bomba::RpcObject<AdvancedRpcClass> {
@@ -28,9 +29,15 @@ struct AdvancedRpcClass : Bomba::RpcObject<AdvancedRpcClass> {
 	Bomba::RpcMember<[] (int first = Bomba::name("first"), int second = Bomba::name("second")) {
 		return first + second;
 	}> sum = child<"sum">;
+	
+	Bomba::RpcMember<[] (std::string message = Bomba::name("message"), bool important = Bomba::name("important")) {
+		if (important)
+			std::cout << "Notification: " << message << std::endl;
+	}> notifyMe = child<"notify_me">;
 };
 
 int main(int argc, char** argv) {
+
 	AdvancedRpcClass method;
 	std::string description = describeInJsonWsp<std::string>(method, "bomba_experiment.com", "Bomba test");
 

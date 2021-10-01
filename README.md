@@ -1,9 +1,34 @@
 # Bomba
 C++20 library for convenient implementation of remote procedure calls and serialisation. Currently, it's a work in progress, it's usable, but there may be bugs, security issues or messy error handling.
 
-To maximise convenience, it needs no code generation and no macros and is entirely header-only, yet its verbosity is at minimum.
+To maximise convenience, it needs no code generation and no macros and is entirely header-only, yet its verbosity is at minimum. It is also usable without any additional libraries.
 
 It's written in bleeding edge C\++20. Works on GCC 12, Clang 13 or MSVC 19. Before C\++23 reflection (`reflexpr` expression) is available, a GCC-only trick relying on Defect Report 2118 is used. Clang and MSVC have to use a different implementation with slighly worse performance. It's intended to be embedded-friendly as it can be used without any dynamic allocation when compiled by GCC and it needs dynamic allocation only during initialisation if compiled with Clang or MSVC). Currently the only available implementation of the networking layer is based on `std::experimental::networking` and uses some dynamic allocation, so that part (about 130 lines) might need reimplementation if used outside PC architectures.
+
+## Showcase
+After setting up the components (examples are below), this is all the code needed to define an API call that allows remotely calling a lambda:
+```C++
+Bomba::RpcMember<[] (std::string message = Bomba::name("message"),
+			bool important = Bomba::name("important")) {
+	if (important)
+		std::cout << "Notification: " << message << std::endl;
+}> notifyMe = child<"notify_me">;
+```
+
+This code can be used both as server and as client, so that the client calls the server's lambda and ignores the contents of its own.
+
+Assuming the path is correct and the feature is enabled, it can be called from a script (only a JavaScript implementation is available):
+```JavaScript
+#!/snap/bin/nodejs
+const bomba = await import("./bomba.js");
+const [api, types] = await bomba.loadApi("0.0.0.0:8080");
+api.notify_me("If you see this, it's working.", true);
+```
+
+Connecting to it through the browser can automatically generate a GUI like this:
+![](screenshot.png)
+
+Alternatively, a custom page can call `notify_me()`.
 
 ## Features
 Bomba is fully usable, but some additional features are planned.
@@ -427,7 +452,9 @@ document.getElementById("body").appendChild(bomba.gui());
 ```
 To obtain a single function's GUI, you can call `bomba.set_message.gui()`. I plan to add more customisation to this.
 
-A GUI that works out of the box is provided by the `index.html` file in the `public_html` folder, so you can have a quick and dirty GUI with C++ only.
+A GUI that works out of the box is provided by the `index.html` file in the `public_html` folder, so you can have a quick and dirty GUI without editing anything but C++.
+
+The GUI can be accessed by connecting to the program's port via browser.
 
 ### Custom string type
 If you can't use `std::string` for some reasons (like restrictions regarding dynamic allocation), you can define your own string type (assuming it's called `String`) and serialise JSON as `Bomba::BasicJson<String>`. I recommend aliasing that type with `using`.

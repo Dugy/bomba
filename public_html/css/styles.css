@@ -1,4 +1,236 @@
-.general{
-	text-align:center;
-	font-family:Helvetica;
+.bombaTitle {
+	text-align: center;
+	font-family: Helvetica;
+	float: center;
+}
+
+.bombaBody {
+	display: flex;
+	justify-content: center;
+	background-color: #ccc;
+}
+
+.bombaContent {
+	width: 700px;
+	background-color: #f8f8f8;
+	border-radius: 5px;
+	border: 2px solid #aaa;
+	padding: 15px;
+}
+
+.bombaQuestionnaire[open] summary ~ * {
+	animation: open 0.5s ease-in-out;
+}
+
+@keyframes open {
+	0% {
+		opacity: 0;
+	}
+	100% {
+		opacity: 1;
+	}
+}
+
+.bombaQuestionnaire summary {
+	width: 100%;
+	padding: 0.5rem 0;
+	border-top: 2px solid #555;
+	position: relative;
+	cursor: pointer;
+	font-size: 1.5rem;
+	font-weight: 500;
+	list-style: none;
+	display: flex;
+	flex-direction: column;
+}
+
+.bombaQuestionnaire summary:after {
+	content: "+";
+	color: #555;
+	position: absolute;
+	font-size: 1.75rem;
+	line-height: 0;
+	margin-top: 0.75rem;
+	right: 0;
+	font-weight: 200;
+	transform-origin: center;
+	transition: 200ms linear;
+}
+
+.bombaQuestionnaire[open] summary:after {
+	transform: rotate(45deg);
+	font-size: 2rem;
+}
+
+.bombaInputBox {
+	position: relative;
+	margin-bottom: 10px;
+	margin-top: 10px;
+}
+
+.bombaInputBox input {
+	font-size: 1.25rem;
+	padding: 10px 10px 5px 5px;
+	display: block;
+	border: none;
+	border-bottom: 1px solid #333;
+	background:transparent;
+	width: calc(100% - 20px);
+}
+
+.bombaInputBox input:focus {
+	outline: none;
+	border-bottom: 2px solid #aaa;
+}
+
+.bombaInputBox label {
+	color: #666;
+	font-size: 1.25rem;
+	font-weight: normal;
+	position: absolute;
+	pointer-events: none;
+	left: 5px;
+	top: 0.5rem;
+	transition: 0.2s ease all;
+}
+
+.bombaInputBox input:focus ~ label,
+.bombaInputBox input:valid ~ label {
+	top: -0.25rem;
+	font-size: 0.75rem;
+	color: #333;
+}
+
+.bombaButtonSpace {
+	display: flex;
+	flex-direction: row;
+	justify-content: space-between;
+	position: relative;
+	margin-top: 15px;
+}
+
+.bombaButtonSpace button {
+	color: black;
+	border-radius: 5px;
+	background-color: #bbb;
+	padding: 0.5rem;
+	font-size: 1.25rem;
+	border: none;
+	cursor: pointer;
+	transition: background 1s;
+	flex-shrink: 0;
+	max-height: 2.5rem;
+}
+
+.bombaButtonSpace button:hover {
+	color: #333;
+	box-shadow: 0 0 5px 5px rgba(200, 200, 200, .4);
+	background: #c0c0c0 radial-gradient(circle, transparent 5%, #ccc 1%) center/15000%;
+}
+
+.bombaButtonSpace button:active {
+	background-color: #d0d0d0;
+	background-size: 100%;
+	box-shadow: 0 0 10px 10px rgba(200, 200, 200, .4);
+	transition: background 0s;
+}
+
+.bombaResultSpace {
+	left: 1rem;
+	top: 0.5rem;
+	font-size: 1.25rem;
+	min-width: 100px;
+	padding-left: 10px;
+	flex-direction: row;
+	flex-grow: 10;
+}
+
+.bombaResultTitle {
+	color: #333;
+	font-size: 0.75rem;
+	font-weight: normal;
+	position: absolute;
+	pointer-events: none;
+	left: 5px;
+	top: -0.75rem;
+	transition: 0.3s ease-out;
+	float: left;
+}
+
+.bombaResultSpace:empty ~ .bombaResultTitle {
+	color: #ddd;
+	font-size: 1.25rem;
+	font-weight: normal;
+	position: absolute;
+	pointer-events: none;
+	left: 0px;
+	top: 0rem;
+	transition: 0.8s ease-out;
+}
+
+.bombaObjectBox {
+}
+
+.bombaFrame {
+	margin: 8px;
+	padding-left: 10px;
+	padding-right: 10px;
+}
+
+.bombaFrame legend {
+}
+
+.bombaCheckboxBox {
+	display: block;
+	position: relative;
+	padding-left: 35px;
+	margin-bottom: 5px;
+	cursor: pointer;
+	font-size: 1.25rem;
+}
+
+.bombaCheckbox {
+	position: absolute;
+	opacity: 0;
+	cursor: pointer;
+	height: 0;
+	width: 0;
+}
+
+.bombaCheckboxVisual {
+	top: 0;
+	left: 0;
+	position: absolute;
+	height: 25px;
+	width: 25px;
+	pointer-events: none;
+	background-color: #eee;
+}
+
+.bombaCheckbox:hover  ~ .bombaCheckboxVisual {
+	background-color: #ccc;
+}
+
+.bombaCheckbox:checked ~ .bombaCheckboxVisual {
+	background-color: #555;
+}
+
+.bombaCheckboxVisual:after {
+	content: "";
+	display: none;
+}
+
+.bombaCheckbox:checked ~ .bombaCheckboxVisual:after {
+	display: block;
+}
+
+.bombaCheckboxBox .bombaCheckboxVisual:after {
+	left: 7px;
+	top: 0px;
+	position: absolute;
+	width: 8px;
+	height: 16px;
+	border: solid white;
+	border-width: 0 5px 5px 0;
+	transform: rotate(45deg);
 }
