@@ -304,13 +304,13 @@ protected:
 };
 
 struct IDescribableSerialisable : ISerialisable {
-	virtual void describe(IPropertyDescriptionFiller& filler) const {
+	virtual void describe([[maybe_unused]] IPropertyDescriptionFiller& filler) const {
 		// Does nothing if not supported
 	}
 	virtual std::string_view getTypeName() const {
 		return "Unnamed";
 	}
-	virtual void listTypes(ISerialisableDescriptionFiller& filler) const {
+	virtual void listTypes([[maybe_unused]] ISerialisableDescriptionFiller& filler) const {
 		// Not supported if not overloaded, does nothing
 	}
 	template <typename> friend struct TypedSerialiser;
@@ -383,22 +383,23 @@ public:
 		_responder = responder;
 	}
 	
-	virtual bool call(IStructuredInput* arguments, IStructuredOutput& result, Callback<> introduceResult,
-			Callback<void(std::string_view)> introduceError, std::optional<UserId> user = std::nullopt) const {
+	virtual bool call([[maybe_unused]] IStructuredInput* arguments, [[maybe_unused]] IStructuredOutput& result,
+			[[maybe_unused]] Callback<> introduceResult, [[maybe_unused]] Callback<void(std::string_view)> introduceError,
+			[[maybe_unused]] std::optional<UserId> user = std::nullopt) const {
 		return false;
 	}
-	virtual const IRemoteCallable* getChild(std::string_view name) const {
+	virtual const IRemoteCallable* getChild([[maybe_unused]] std::string_view name) const {
 		return nullptr;
 	}
-	virtual std::string_view childName(const IRemoteCallable* child) const {
+	virtual std::string_view childName([[maybe_unused]] const IRemoteCallable* child) const {
 		logicError("No such structure");
 		return "";
 	}
 	
-	virtual void listTypes(ISerialisableDescriptionFiller& filler) const {
+	virtual void listTypes([[maybe_unused]] ISerialisableDescriptionFiller& filler) const {
 		// Not supported if not overloaded, does nothing
 	}
-	virtual void generateDescription(IRemoteCallableDescriptionFiller& filler) const {
+	virtual void generateDescription([[maybe_unused]] IRemoteCallableDescriptionFiller& filler) const {
 		// Not supported if not overloaded, does nothing
 	}
 };
@@ -645,7 +646,6 @@ struct TypedSerialiser<Vector> {
 
 	static void describeType(IPropertyDescriptionFiller& filler)  {
 		filler.addArray([] (IPropertyDescriptionFiller& subFiller) {
-			std::remove_reference_t<decltype(std::declval<Vector>()[0])> value;
 			TypedSerialiser<ValueType>::describeType(subFiller);
 		});
 	}
@@ -766,7 +766,6 @@ struct TypedSerialiser<Ptr> {
 
 	static void describeType(IPropertyDescriptionFiller& filler)  {
 		filler.addOptional([] (IPropertyDescriptionFiller& subFiller) {
-			std::remove_reference_t<decltype(*std::declval<Ptr>())> value;
 			TypedSerialiser<ValueType>::describeType(subFiller);
 		});
 	}

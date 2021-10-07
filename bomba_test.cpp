@@ -873,7 +873,7 @@ R"~(<!doctype html>
 		doATestIgnoringWhitespace(client.request, expectedPost);
 	}
 
-	{
+	 {
 		std::cout << "Testing better HTTP server" << std::endl;
 		Bomba::SimpleGetResponder getResponder;
 		getResponder.resource = someHtml;
@@ -911,8 +911,10 @@ R"~(<!doctype html>
 			Bomba::BackgroundTcpServer<decltype(httpServer)> server = {&httpServer, 8901}; // Very unlikely this port will be used for something
 
 			InlineMethod methodClient;
-			Bomba::SyncNetworkClient client = {"0.0.0.0", "8901"};
-			Bomba::HttpClient<> httpClient = {&client, "0.0.0.0"};
+			std::string targetAddress = "0.0.0.0";
+			std::string targetPort = "8901";
+			Bomba::SyncNetworkClient client = {targetAddress, targetPort};
+			Bomba::HttpClient<> httpClient = {&client, targetAddress};		
 
 			Fixture(const std::string& html) {
 				getResponder.resource = html;
@@ -963,7 +965,39 @@ R"~(<!doctype html>
 				return true;
 			});
 		}
-		std::cout << " average response time is " << fixture.server.averageResponseTime().count() << " ns" << std::endl;
+		std::cout << " average response time is " << fixture.server.averageResponseTime().count() << " ns per packet" << std::endl;
+	}
+
+	{
+		std::cout << "Asynchronously benchmarking HTTP server's GET...";
+		auto fixture = makeHttpTestFixture();
+		std::atomic_int totalRequests = 0;
+		auto workload = [&] () {
+			std::array<Bomba::RequestToken, 20000> requests = {};
+			Bomba::SyncNetworkClient client = {fixture.targetAddress, fixture.targetPort};
+			Bomba::HttpClient<> httpClient = {&client, fixture.targetAddress};
+			
+			for (Bomba::RequestToken& token : requests)
+				token = httpClient.get("/");
+			// We don't have enough threads to wait for each response individually
+			for (Bomba::RequestToken& token : requests) {
+				httpClient.getResponse(token, [&] (std::span<char>, bool) {
+					totalRequests++;
+					return true;
+				});
+			}
+		};
+		auto startTime = std::chrono::steady_clock::now();
+		{
+			std::vector<std::jthread> workers;
+			for (int i = 0; i < 5; i++)
+				workers.emplace_back(workload);
+			// Destructors wait until they finish
+		}
+		auto endTime = std::chrono::steady_clock::now();
+		int average = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime).count() / totalRequests;
+		
+		std::cout << " average response time is " << average << " ns per request" << std::endl;
 	}
 
 	{
@@ -972,7 +1006,7 @@ R"~(<!doctype html>
 		for (int i = 0; i < 2000; i++) {
 			fixture.methodClient("Protest against the clouds!");
 		}
-		std::cout << " average response time is " << fixture.server.averageResponseTime().count() << " ns" << std::endl;
+		std::cout << " average response time is " << fixture.server.averageResponseTime().count() << " ns per packet" << std::endl;
 	}
 
 	const std::string expectedJsonRpcRequest =
