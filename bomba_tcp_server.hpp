@@ -9,6 +9,8 @@
 #include <vector>
 #include <chrono>
 
+#include <iostream>
+
 namespace Bomba {
 
 namespace Net = std::experimental::net;
@@ -26,45 +28,114 @@ class TcpServer {
 	struct Session {
 		Net::ip::tcp::socket _socket;
 		typename Responder::Session _responder;
-		std::array<char, 2048> _responseArray = {};
-		Net::const_buffer _responseBuffer = Net::buffer(_responseArray);
-		std::vector<char> _leftovers;
+		constexpr static int ResponseMaxSize = 2048;
+		constexpr static int ResponseBufferSize = ResponseMaxSize * 1.5;
+		std::array<char, ResponseBufferSize> _responseArray = {};
+		Net::const_buffer _responseBuffer = Net::buffer(_responseArray.data(), ResponseMaxSize);
+		int _keptStart = 0;
+		int _keptEnd = 0;
+		std::vector<char> _longLeftovers;
 		TcpServer* _parent = nullptr;
 		int _index = {};
 
 		Session(Net::ip::tcp::socket&& socket, Responder* responder, TcpServer* parent, int index)
 			: _socket(std::move(socket)), _responder(responder->getSession()), _parent(parent), _index(index) { }
 
-		ServerReaction readLeftovers() {
-			auto [reaction, parsed] = _responder.respond(_leftovers, [this] (std::span<const char> output) {
+		ServerReaction readBuffer() {
+			std::span<char> input;
+			if (_longLeftovers.empty()) [[likely]] {
+				input = std::span<char>(_responseArray.begin() + _keptStart, _keptEnd - _keptStart);
+			} else {
+				input = std::span<char>(_longLeftovers.begin() + _keptStart, _keptEnd - _keptStart);
+			}
+
+			auto [reaction, parsed] = _responder.respond(input, [this] (std::span<const char> output) {
 				_socket.send(Net::buffer(output.data(), output.size()));
 			});
+
 			if (reaction == ServerReaction::DISCONNECT) {
 				return reaction;
 			}
 			if (reaction == ServerReaction::OK) {
-				if (int(_leftovers.size()) > parsed) {
-					_leftovers = std::vector<char>(_leftovers.begin() + parsed, _leftovers.end());
-				} else
-					_leftovers.clear();
+				_keptStart += parsed;
 			}
 			return reaction;
 		}
 
 		void readSome() {
+			if (!_longLeftovers.empty()) [[unlikely]] {
+				// Long message, make space at the end of the vector
+				_keptEnd = _longLeftovers.size();
+				_longLeftovers.resize(_keptEnd + ResponseBufferSize);
+				_responseBuffer = Net::const_buffer(_longLeftovers.data() + _keptEnd, _longLeftovers.size() - _keptEnd);
+			} else {
+				if (_keptStart == 0 && _keptEnd == ResponseBufferSize) [[unlikely]] {
+					// No more space in the buffer, move it to the vector
+					_longLeftovers.resize(2 * ResponseBufferSize);
+					memcpy(_longLeftovers.data(), _responseArray.data(), _responseArray.size());
+					_responseBuffer = Net::const_buffer(_longLeftovers.data() + _keptEnd, _longLeftovers.size() - _keptEnd);
+				} else {
+					// Normal buffer usage
+					if (_keptStart == _keptEnd) {
+						// We can start from the beginning
+						_keptStart = 0;
+						_keptEnd = 0;
+						_responseBuffer = Net::const_buffer(_responseArray.data(), ResponseMaxSize);
+					} else if (_keptStart > ResponseBufferSize - _keptEnd) {
+						// More space at the start
+						int copySize = _keptEnd - _keptStart;
+						memmove(_responseArray.data(), _responseArray.data() + _keptStart, copySize);
+						int bufferSize = std::min(_keptStart, ResponseMaxSize);
+						_responseBuffer = Net::const_buffer(_responseArray.data() + copySize, bufferSize);
+						_keptStart = 0;
+						_keptEnd = copySize;
+					} else {
+						// More space at the end
+						int bufferSize = std::min(ResponseBufferSize - _keptEnd, ResponseMaxSize);
+						_responseBuffer = Net::const_buffer(_responseArray.data() + _keptEnd, bufferSize);
+					}
+				}
+			}
+
 			_socket.async_receive(_responseBuffer,
 					[this] (std::error_code error, int length = 0) {
 				if (error || length == 0 /* Means end of stream */) {
 					return cancel();
 				}
-
 				auto startTime = std::chrono::steady_clock::now();
-				_leftovers.insert(_leftovers.end(), _responseArray.begin(), _responseArray.begin() + length);
+
+				_keptEnd += length;
+				if (!_longLeftovers.empty()) [[unlikely]] {
+					// Message too large for the buffer, it had to be written into the vector
+					_longLeftovers.resize(_keptEnd); // Shrink to contain only the data that was actually read
+				}
+
 				ServerReaction reaction = ServerReaction::OK;
-				while (!_leftovers.empty() && (reaction = readLeftovers()) == ServerReaction::OK) {}
+				int previousReadStart = _keptStart;
+				while ((reaction = readBuffer()) == ServerReaction::OK) {
+					if (_keptStart == _keptEnd)
+						break;
+				}
 				if (reaction == ServerReaction::DISCONNECT) {
 					return cancel();
 				}
+
+				if (!_longLeftovers.empty() && previousReadStart != _keptStart) [[unlikely]] {
+					// Something was read successfully
+					int left = _longLeftovers.size() - _keptStart;
+					if (left > _responseArray.size()) {
+						_longLeftovers.erase(_longLeftovers.begin(), _longLeftovers.begin() + _keptStart);
+						_keptEnd = left;
+						_keptStart = 0;
+					} else {
+						memcpy(_responseArray.data(), _longLeftovers.data() + _keptStart, left);
+						_keptEnd = left;
+						_keptStart = 0;
+						_longLeftovers.clear();
+						_longLeftovers.shrink_to_fit();
+					}
+				}
+
 				readSome();
 				auto endTime = std::chrono::steady_clock::now();
 				_parent->_totalResponseTime += std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime);

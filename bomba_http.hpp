@@ -29,7 +29,7 @@ struct HttpParseState {
 		}
 		while (input[transition] != '\n' || input[transition - 1] != '\r'
 			   || input[transition - 2] != '\n' || input[transition - 3] != '\r') {
-			if (transition >= int(input.size())) [[unlikely]]
+			if (transition >= int(input.size()) - 1) [[unlikely]]
 					return {ServerReaction::READ_ON, input.size()};
 			else
 				 transition++;
@@ -40,7 +40,7 @@ struct HttpParseState {
 		auto readWordUntil = [&] (char separator) -> std::string_view {
 			const int startPosition = position;
 			std::span<char>::iterator start = std::span(input.begin() + position, 1).begin();
-			while (position <  transition && input[position] != separator)
+			while (position < transition && input[position] != separator)
 				position++;
 			position++;
 			return std::string_view(&*start, position - startPosition - 1);
