@@ -13,62 +13,133 @@ namespace Bomba {
 
 namespace Detail {
 struct HttpParseState {
-	int transition = 0;
+	int parsePosition = 0;
 	int bodySize = -1;
 
 	void reset() {
-		transition = 0;
+		parsePosition = 0;
 		bodySize = -1;
 	}
 
-	template <typename FirstLineReader, typename HeaderReader>
-	std::pair<ServerReaction, int64_t> parse(const FirstLineReader& firstLineReader,
-				const HeaderReader& headerReader, std::span<char> input) {
-		if (input.size() < 4) { // Not even space for the separator
-			return {ServerReaction::READ_ON, 0};
-		}
-		while (input[transition] != '\n' || input[transition - 1] != '\r'
-			   || input[transition - 2] != '\n' || input[transition - 3] != '\r') {
-			if (transition >= int(input.size()) - 1) [[unlikely]]
-					return {ServerReaction::READ_ON, input.size()};
-			else
-				 transition++;
-		}
-		transition++;
+	std::pair<ServerReaction, int64_t> parse(std::span<char> input) {
+		int position = parsePosition;
 
-		int position = 0;
-		auto readWordUntil = [&] (char separator) -> std::string_view {
-			const int startPosition = position;
-			std::span<char>::iterator start = std::span(input.begin() + position, 1).begin();
-			while (position < transition && input[position] != separator)
+		if (position == 0) { // Header not read yet
+			while (position < int(input.size())) {
+				if (input[position] == '\r') {
+					position++;
+					if (position >= int(input.size()))
+						break;
+					if (input[position] != '\n')
+						return {ServerReaction::DISCONNECT, 0};
+					break;
+				}
 				position++;
-			position++;
-			return std::string_view(&*start, position - startPosition - 1);
-		};
-
-		std::string_view firstLine = readWordUntil('\r');
-		if (!firstLineReader(input, firstLine.size())) {
-			return {ServerReaction::DISCONNECT, input.size()};
-		}
-
-		while (position < transition) {
-			position += 1; // The \n after \r
-			std::string_view property = readWordUntil(':');
-			if (property.empty())
-				break; // End of header
-			for (const char& letter : property) {
-				if (letter >= 'A' && letter <= 'Z') // tolower for ASCII, must be case insensitive
-					const_cast<char&>(letter) += 'a' - 'A';
 			}
-			while (input[position] == ' ')
-				position++;
-			std::string_view value = readWordUntil('\r');
-			if (property == "content-length") {
-				std::from_chars(&*value.begin(), &*value.end(), bodySize);
-			} else headerReader(property, input, value.data() - input.data(), value.size());
+
+			if (position == int(input.size())) {
+				return {ServerReaction::READ_ON, position - 1};
+			}
+			position++;
+
+			if (!firstLineReader({input.data(), size_t(position)})) {
+				return {ServerReaction::DISCONNECT, 0};
+			}
+			parsePosition = position;
 		}
-		return { ServerReaction::OK, transition };
+
+		if (position == int(input.size())) {
+			return {ServerReaction::READ_ON, position - 1};
+		}
+		// Parse it line by line
+		while (input[position] != '\r') {
+			int attributeNameStart = 0;
+			std::string_view attributeName;
+			int attributeValueStart = 0;
+			std::string_view attributeValue;
+
+			// Skip initial whitespace
+			while (position < int(input.size())) {
+				if (input[position] != ' ' && input[position] != '\t') {
+					attributeNameStart = position;
+					break;
+				}
+				position++;
+			}
+			if (position >= int(input.size())) {
+				return {ServerReaction::READ_ON, position - 1};
+			}
+
+			// Go through the attribute name
+			while (position < int(input.size())) {
+				if (input[position] == ' ' || input[position] == '\t' || input[position] == ':') {
+					attributeName = std::string_view(input.data() + attributeNameStart, position - attributeNameStart);
+					break;
+				}
+				if (input[position] <= 'Z' && input[position] >= 'A')
+					input[position] += 'a' - 'A';
+				position++;
+			}
+			if (position >= int(input.size())) {
+				return {ServerReaction::READ_ON, position - 1};
+			}
+
+			// Find the value
+			bool colonFound = false;
+			while (position < int(input.size())) {
+				if (input[position] == ':')
+					colonFound = true;
+				if (input[position] != ' ' && input[position] != '\t' && input[position] != ':') {
+					attributeValueStart = position;
+					break;
+				}
+				position++;
+			}
+			if (position >= int(input.size())) {
+				return {ServerReaction::READ_ON, position - 1};
+			}
+			if (colonFound == false) {
+				return {ServerReaction::DISCONNECT, 0};
+			}
+
+			// Find the end of the attribute
+			while (position < int(input.size())) {
+				if (input[position] == '\r') {
+					attributeValue = std::string_view(input.data() + attributeValueStart, position - attributeValueStart);
+					break;
+				}
+				position++;
+			}
+			if (position >= int(input.size())) {
+				return {ServerReaction::READ_ON, position - 1};
+			}
+
+			// Use the data
+			if (attributeName == "content-length") {
+				std::from_chars(&*attributeValue.begin(), &*attributeValue.end(), bodySize);
+			} else
+				headerReader(attributeName, attributeValue, std::pair<int, int>(attributeValueStart, attributeValue.size()));
+
+			// Finish the line
+			position += 2;
+			parsePosition = position;
+			if (position >= int(input.size())) {
+				return {ServerReaction::READ_ON, position - 1};
+			}
+		}
+
+		if (parsePosition + 1 >= int(input.size())) {
+			return {ServerReaction::READ_ON, position - 1};
+		}
+		if (input[parsePosition + 1] != '\n')
+			return {ServerReaction::DISCONNECT, 0};
+		parsePosition += 2; // Skip the last \r\n, get to content
+
+		return { ServerReaction::OK, parsePosition };
 	}
+
+	virtual bool firstLineReader(std::string_view firstLine) = 0;
+	virtual void headerReader(std::string_view property, std::string_view value, std::pair<int, int> location) = 0;
 };
 } // namespace Detail
 
@@ -555,77 +626,81 @@ public:
 			
 	class Session : ITcpResponder {
 		Responders _responders;
-		enum RequestType {
-			UNINVESTIGATED_REQUEST,
-			UNKNOWN_REQUEST,
-			GET_REQUEST,
-			POST_REQUEST,
-			WEIRD_REQUEST
-		} _requestType = UNINVESTIGATED_REQUEST;
-		std::pair<int, int> _path;
-		std::pair<int, int> _contentType;
-		ServerReaction _ending = ServerReaction::OK;
-		Detail::HttpParseState _state;
-	public:
-		std::pair<ServerReaction, int64_t> respond(
-					std::span<char> input, Callback<void(std::span<const char>)> writer) override {
-			auto firstLineReader = [&] (std::span<char> input, int size) {
+
+		struct ParseState : Detail::HttpParseState {
+			enum RequestType {
+				UNINVESTIGATED_REQUEST,
+				UNKNOWN_REQUEST,
+				GET_REQUEST,
+				POST_REQUEST,
+				WEIRD_REQUEST
+			} requestType = UNINVESTIGATED_REQUEST;
+			std::pair<int, int> path;
+			std::pair<int, int> contentType;
+			ServerReaction ending = ServerReaction::OK;
+
+			virtual bool firstLineReader(std::string_view firstLine) override {
 				int separator1 = 0;
-				while (input[separator1] != ' ' && separator1 < size)
+				while (firstLine[separator1] != ' ' && separator1 < int(firstLine.size()))
 					separator1++;
-				std::string_view methodName = {input.data(), size_t(separator1)};
+				std::string_view methodName = firstLine.substr(0, separator1);
 				if (methodName == "GET")
-					_requestType = GET_REQUEST;
+					requestType = GET_REQUEST;
 				else if (methodName == "POST")
-					_requestType = POST_REQUEST;
+					requestType = POST_REQUEST;
 				else
-					_requestType = WEIRD_REQUEST;
+					requestType = WEIRD_REQUEST;
 
 				separator1++;
 				int separator2 = separator1;
-				while (input[separator2] != ' ' && separator2 < size)
+				while (firstLine[separator2] != ' ' && separator2 < int(firstLine.size()))
 					separator2++;
-				_path = std::pair<int, int>(separator1, separator2 - separator1);
+				path = std::pair<int, int>(separator1, separator2 - separator1);
 				separator2++;
 				int separator3 = separator2;
-				while (input[separator3] != '\r' && separator3 < size)
+				while (firstLine[separator3] != '\r' && separator3 < int(firstLine.size()))
 					separator3++;
-				std::string_view protocol = {input.data() + separator2, size_t(separator3 - separator2)};
+				std::string_view protocol = firstLine.substr(separator2, separator3 - separator2);
 				if (protocol != "HTTP/1.1" && protocol != "HTTP/1.0")
-					_requestType = WEIRD_REQUEST;
+					requestType = WEIRD_REQUEST;
 				return true;
-			};
-			auto headerReader = [&] (std::string_view property, std::span<char> input, int valueOffset, int valueSize) {
-				if (property == "content-type") {
-					_contentType = std::pair<int, int>(valueOffset, valueSize);
-				} else if (property == "connection") {
-					std::string_view value = {input.data() + valueOffset, size_t(valueSize)};
+			}
+			virtual void headerReader(std::string_view name, std::string_view value, std::pair<int, int> location) override {
+				if (name == "content-type") {
+					contentType = location;
+				} else if (name == "connection") {
 					if (value == "close")
-						_ending = ServerReaction::DISCONNECT;
+						ending = ServerReaction::DISCONNECT;
 				} // Ignore others
-			};
+			}
+		};
+
+		ParseState _state;
+	public:
+		std::pair<ServerReaction, int64_t> respond(
+					std::span<char> input, Callback<void(std::span<const char>)> writer) override {
 			auto restore = [this] () {
 				_state.reset();
-				_requestType = UNINVESTIGATED_REQUEST;
+				_state.requestType = ParseState::UNINVESTIGATED_REQUEST;
 			};
 
 			// Locate the header's span
 			if (_state.bodySize == -1) {
-				auto [reaction, position] = _state.parse(firstLineReader, headerReader, input);
+				auto [reaction, position] = _state.parse(input);
 				if (reaction != ServerReaction::OK) {
 					restore();
 					return {reaction, position};
 				}
 			}
 
-			if (_requestType != POST_REQUEST)
+			if (_state.requestType != ParseState::POST_REQUEST)
 				_state.bodySize = 0;
-			int consuming = _state.transition + _state.bodySize;
+			int consuming = _state.parsePosition + _state.bodySize;
 			
 			// All body has beed read
-			if (_requestType == GET_REQUEST || _requestType == POST_REQUEST) [[likely]] {
-				if (_requestType == POST_REQUEST) {
-					if (_state.bodySize == -1 || int(input.size()) < _state.transition + _state.bodySize) {
+			if (_state.requestType == ParseState::GET_REQUEST || _state.requestType == ParseState::POST_REQUEST) [[likely]] {
+				if (_state.requestType == ParseState::POST_REQUEST) {
+					if (_state.bodySize == -1 || int(input.size()) < _state.parsePosition + _state.bodySize) {
 						return {ServerReaction::READ_ON, input.size()};
 					}
 				}
@@ -646,9 +721,9 @@ public:
 					headerSize = response.size();
 					return response;
 				};
-				std::string_view path{input.data() + _path.first, size_t(_path.second)};
+				std::string_view path{input.data() + _state.path.first, size_t(_state.path.second)};
 				try {
-					if (_requestType == GET_REQUEST) {
+					if (_state.requestType == ParseState::GET_REQUEST) {
 						success = _responders.getResponder->get(path, correctResponseWriter);
 						if (!success) [[unlikely]] {
 							constexpr std::string_view errorMessage =
@@ -658,8 +733,8 @@ public:
 							writer(std::span<const char>(errorMessage.begin(), errorMessage.size()));
 						}
 					} else {
-						std::span<char> body = {input.begin() + _state.transition, input.begin() + _state.transition + _state.bodySize};
-						std::string_view contentType = {input.data() + _contentType.first, size_t(_contentType.second)};
+						std::span<char> body = {input.begin() + _state.parsePosition, input.begin() + _state.parsePosition + _state.bodySize};
+						std::string_view contentType = {input.data() + _state.contentType.first, size_t(_state.contentType.second)};
 						success = _responders.postResponder->post(path, contentType, body, correctResponseWriter);
 						if (!success) [[unlikely]] {
 							constexpr std::string_view errorMessage =
@@ -699,7 +774,7 @@ public:
 				writer(std::span<const char>(errorMessage.begin(), errorMessage.size()));
 				restore();
 			}
-			return {_ending, consuming};
+			return {_state.ending, consuming};
 		}
 		
 	
@@ -752,6 +827,23 @@ class HttpClient : public IRpcResponder {
 		return has;
 	}
 
+	struct ParseState : Detail::HttpParseState {
+		int resultCode = 0;
+
+		virtual bool firstLineReader(std::string_view firstLine) override {
+			int separator1 = 0;
+			while (firstLine[separator1] != ' ' && separator1 < firstLine.size())
+				separator1++;
+			separator1++;
+			int separator2 = separator1 + 1;
+			while (firstLine[separator2] != ' ' && separator2 < firstLine.size())
+				separator2++;
+			std::from_chars(&firstLine[separator1], &firstLine[separator2], resultCode);
+			return true;
+		}
+		virtual void headerReader(std::string_view, std::string_view, std::pair<int, int>) override { }
+	};
+
 public:
 	using StringType = StringT;
 	HttpClient(ITcpClient* client, std::string_view virtualHost) : _client(client), _virtualHost(virtualHost) {}
@@ -797,55 +889,38 @@ public:
 	void getResponse(RequestToken token, Callback<bool(std::span<char> message, bool success)> reader) {
 		bool obtained = false;
 		while (!obtained) {
-			int resultCode = 0;
-			auto checkServerResponse = [&] (std::span<char> header, int size) {
-				int separator1 = 0;
-				while (header[separator1] != ' ' && separator1 < size)
-					separator1++;
-				separator1++;
-				int separator2 = separator1 + 1;
-				while (header[separator2] != ' ' && separator2 < size)
-					separator2++;
-				std::from_chars(&header[separator1], &header[separator2], resultCode);
-				return true;
-			};
-			Detail::HttpParseState state;
+			ParseState state;
 			_client->getResponse(token, [&, this] (std::span<char> input, bool identified)
 						-> std::tuple<ServerReaction, RequestToken, int64_t> {
 				// Locate the header's span
 				if (state.bodySize == -1) {
-					auto [reaction, position] = state.parse(checkServerResponse,
-							[] (std::string_view, std::span<char>, int, int) {}, input);
+					auto [reaction, position] = state.parse(input);
 					if (reaction != ServerReaction::OK) {
 						return {reaction, RequestToken{}, position};
 					}
 				}
 
-				if (state.bodySize > 0 && int(input.size()) < state.transition + state.bodySize) {
+				if (state.bodySize > 0 && int(input.size()) < state.parsePosition + state.bodySize) {
 					return {ServerReaction::READ_ON, RequestToken{}, input.size()};
 				}
 			
 				if (!identified && token != RequestToken{ _lastTokenRead.id + 1}) {
-					int offset = state.transition + std::max(0, state.bodySize);
-					state = Detail::HttpParseState{};
+					int offset = state.parsePosition + std::max(0, state.bodySize);
+					state = ParseState{};
 					_lastTokenRead.id++;
 					return {ServerReaction::WRONG_REPLY, _lastTokenRead, offset};
 				}					
 				obtained = true;
 
-				reader(std::span<char>(input.begin() + state.transition, input.begin() + state.transition + state.bodySize),
-						(resultCode >= 200 && resultCode < 300));
+				reader(std::span<char>(input.begin() + state.parsePosition, input.begin() + state.parsePosition + state.bodySize),
+						(state.resultCode >= 200 && state.resultCode < 300));
 				if (!identified)
 					_lastTokenRead.id++;
-				return {ServerReaction::OK, _lastTokenRead, state.transition + state.bodySize};
+				return {ServerReaction::OK, _lastTokenRead, state.parsePosition + state.bodySize};
 			});
 		}
 	}
 };
-
-
-
-
 
 } // namespace Bomba
 
