@@ -211,10 +211,10 @@ public:
 	}
 };
 
-template <BetterAssembledString StringType>
+template <BetterAssembledString StringType = std::string, BetterAssembledString AuxiliaryStrings = StringType>
 StringType describeInJsonWsp(IRemoteCallable& callable, std::string_view url, std::string_view name) {
 	StringType rawOutput;
-	typename BasicJson<StringType>::Output outputInstance(rawOutput);
+	typename BasicJson<AuxiliaryStrings, StringType>::Output outputInstance(rawOutput);
 	IStructuredOutput& output = outputInstance;
 	constexpr SerialisationFlags::Flags noFlags = SerialisationFlags::NONE;
 	output.startWritingObject(noFlags, 6);

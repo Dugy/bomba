@@ -5,6 +5,7 @@
 #include <string_view>
 #include <span>
 #include <tuple>
+#include <cstring>
 
 #ifndef BOMBA_ALTERNATIVE_ERROR_HANDLING
 #include <stdexcept>
@@ -236,11 +237,100 @@ private:
 	}
 };
 
+class GeneralisedBuffer {
+	using BufferType = std::span<char>;
+	BufferType _buffer;
+	int _size = 0;
+
+public:
+	GeneralisedBuffer(const BufferType& buffer) : _buffer(buffer) {}
+
+	GeneralisedBuffer& operator+=(char added) {
+		*_buffer.begin() = added;
+		_buffer = BufferType(_buffer.begin() + 1, _buffer.end());
+		_size++;
+		if (_buffer.size() == 0) {
+			bufferFull();
+		}
+		return *this;
+	}
+
+	GeneralisedBuffer& operator+=(std::string_view added) {
+		int position = 0;
+		while (position < int(added.size())) {
+			int toCopy = std::min<int>(added.size() - position, remainingSpace());
+			memcpy(_buffer.data(), added.data() + position, toCopy);
+			_buffer = BufferType(_buffer.begin() + toCopy, _buffer.end());
+			_size += toCopy;
+			if (_buffer.size() == 0) {
+				if (!bufferFull()) return *this;
+			}
+			position += toCopy;
+		}
+		return *this;
+	}
+
+	int size() {
+		return _size;
+	}
+
+protected:
+	virtual bool bufferFull() = 0;
+	void moveBuffer(const BufferType& newBuffer) {
+		_buffer = newBuffer;
+	}
+	int remainingSpace() const {
+		return _buffer.size();
+	}
+};
+
+template <int StaticSize = 1024>
+class StreamingBuffer : public GeneralisedBuffer {
+protected:
+	std::array<char, StaticSize> _basic;
+	int _sizeAtLastFlush = 0;
+
+	bool bufferFull() override {
+		flush();
+		_sizeAtLastFlush = size();
+		moveBuffer({_basic.data(), StaticSize});
+		return true;
+	}
+
+	virtual void flush() = 0;
+
+public:
+	StreamingBuffer() : GeneralisedBuffer({reinterpret_cast<char*>(&_basic), sizeof(_basic)}) { }
+};
+
+template <int StaticSize = 1024>
+class NonExpandingBuffer : public GeneralisedBuffer {
+	std::array<char, StaticSize> _basic;
+
+	bool bufferFull() override {
+		return false;
+	}
+
+public:
+	NonExpandingBuffer() : GeneralisedBuffer({reinterpret_cast<char*>(&_basic), sizeof(_basic)}) {}
+
+	operator std::span<char>() {
+		return std::span<char>(_basic.data(), _basic.size() - remainingSpace());
+	}
+	operator std::string_view() const {
+		return {_basic.data(), _basic.size() - remainingSpace()};
+	}
+
+	void clear() {
+		moveBuffer({_basic.data(), _basic.size()});
+	}
+};
+
 template <typename T>
-concept AssembledString = std::is_same_v<T&, decltype(std::declval<T>() += 'a')>
-		&& std::is_same_v<T&, decltype(std::declval<T>() += "a")>
-		&& std::is_convertible_v<T, std::string_view>
-		&& std::is_void_v<decltype(std::declval<T>().clear())>;
+concept AssembledString = requires(T str) {
+	str	+= 'a';
+	str += std::string_view("a");
+};
 
 template <typename T>
 concept BetterAssembledString = std::is_constructible_v<T>
@@ -324,6 +414,11 @@ struct IRemoteCallableDescriptionFiller {
 	virtual void addMethod(std::string_view name, std::string_view description,
 			Callback<void(IPropertyDescriptionFiller&)> paramFiller, Callback<void(IPropertyDescriptionFiller&)> returnFiller) = 0;
 	virtual void addSubobject(std::string_view name, Callback<void(IRemoteCallableDescriptionFiller&)> nestedFiller) = 0;
+};
+
+struct IWriteStarter {
+	virtual GeneralisedBuffer& writeUnknownSize(std::string_view resourceType) = 0;
+	virtual GeneralisedBuffer& writeKnownSize(std::string_view resourceType, int64_t size) = 0;
 };
 
 class IRemoteCallable;

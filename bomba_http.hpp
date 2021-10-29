@@ -222,10 +222,14 @@ void mangleHttpResponse(std::string_view input, StringType& output) {
 		} else if (std::string_view(".*-_^\\~'`|<>[]{}()").find(letter) != std::string_view::npos) {
 			output += letter;
 		} else {
-			output += "%00";
-			std::string_view outputView = output;
-			std::to_chars(const_cast<char*>(outputView.data() + outputView.size() - 2),
-						  const_cast<char*>(outputView.data() + outputView.size()), letter, 16);
+			output += '%';
+			for (int offset = 4; offset >= 0; offset -= 4) {
+				int part = (letter >> offset) & 0x0f;
+				if (part < 10)
+					output += '0' + part;
+				else
+					output += 'a' + part - 10;
+			}
 		}
 	};
 	for (int i = 0; i < int(input.size()); i++) {
@@ -269,11 +273,11 @@ void mangleHttpResponse(std::string_view input, StringType& output) {
 	}
 }
 
-template <AssembledString StringType = std::string>
+template <BetterAssembledString LocalStringType = std::string, AssembledString OutputStringType = GeneralisedBuffer>
 struct HtmlMessageEncoding {
 	class Input : public IStructuredInput {
 		std::string_view _contents;
-		StringType _demangled;
+		LocalStringType _demangled;
 		int _position = 0;
 		bool _objectStarted = false; // No object recursion allowed
 
@@ -417,7 +421,7 @@ struct HtmlMessageEncoding {
 	};
 
 	class Output : public IStructuredOutput {
-		StringType& _contents;
+		OutputStringType& _contents;
 		static constexpr int OBJECT_NOT_WRITTEN = -1;
 		int _objectIndex = OBJECT_NOT_WRITTEN;
 
@@ -429,7 +433,7 @@ struct HtmlMessageEncoding {
 			_contents += &bytes[0];
 		}
 	public:
-		Output(StringType& contents) : _contents(contents) {}
+		Output(OutputStringType& contents) : _contents(contents) {}
 
 		void writeInt(Flags, int64_t value) final override {
 			writeValue(value);
@@ -480,30 +484,17 @@ struct HtmlMessageEncoding {
 };
 
 template <typename T, typename AssembledStringType>
-concept HttpGetResponder = requires(T value, std::string_view input,
-		decltype ([] (std::string_view) -> AssembledStringType& { return *reinterpret_cast<AssembledStringType*>(0); } ) writer) {
+concept HttpGetResponder = requires(T value, std::string_view input, IWriteStarter& writer) {
 	{ value.get(input, writer) } -> std::same_as<bool>;
 };
 
 template <typename T, typename AssembledStringType>
-concept HttpPostResponder = requires(T value, std::string_view input, std::span<char> body,
-		decltype([] (std::string_view) -> AssembledStringType& { return *reinterpret_cast<AssembledStringType*>(0); }) writer) {
+concept HttpPostResponder = requires(T value, std::string_view input, std::span<char> body, IWriteStarter& writer) {
 	{ value.post(input, input, body, writer) } -> std::same_as<bool>;
 };
 
-template <typename T>
-concept HttpWriteStarter = requires(const T& value, std::string_view streamType) {
-	{ value(streamType) } -> AssembledString;
-};
-
-template <typename T, typename WriteStarter>
-concept HttpFileGetterCallback = requires(T value, WriteStarter starter) {
-	{ value(starter) } -> std::same_as<bool>;
-};
-
 struct DummyGetResponder {
-	template <HttpWriteStarter WriteStarter>
-	static bool get(std::string_view, const WriteStarter&) {
+	static bool get(std::string_view, const IWriteStarter&) {
 		return false;
 	}
 };
@@ -511,9 +502,8 @@ struct DummyGetResponder {
 struct SimpleGetResponder {
 	std::string_view resource;
 	std::string_view resourceType = "text/html";
-	template <HttpWriteStarter WriteStarter>
-	bool get(std::string_view, const WriteStarter& writeResponse) {
-		auto& response = writeResponse(std::string_view(resourceType));
+	bool get(std::string_view, IWriteStarter& writeResponse) {
+		auto& response = writeResponse.writeKnownSize(std::string_view(resourceType), resource.size());
 		response += resource;
 		return true;
 	}
@@ -527,23 +517,18 @@ struct SimpleGetResponder {
 //{ value.dispatch(method, args, writer, outputProvider) } -> std::same_as<bool>;
 //};
 
-template <AssembledString AssembledStringType = std::string,
-		typename OutputFormat = typename HtmlMessageEncoding<AssembledStringType>::Output,
-		StringLiteral name = "application/x-www-form-urlencoded">
+template <typename OutputFormat, StringLiteral name = "application/x-www-form-urlencoded">
 struct DownloadIfFilePresent {
-	template <HttpWriteStarter WriteStarter>
-	using GetterCallbackArg = WriteStarter;
-	template <HttpWriteStarter WriteStarter, HttpFileGetterCallback<WriteStarter> GetterCallback>
 	static bool dispatch(const IRemoteCallable* method, IStructuredInput* args,
-					WriteStarter outputProvider, GetterCallback writer) {
+					IWriteStarter& outputProvider, Callback<bool(IWriteStarter&)> writer) {
 		bool fileFound = writer(outputProvider);
 		if (method) {
 			if (fileFound) {
 				NullStructredOutput nullResponse;
 				method->call(args, nullResponse, {}, {});
 			} else {
-				AssembledStringType& output = outputProvider(name);
-				OutputFormat response(output);
+				GeneralisedBuffer& output = outputProvider.writeUnknownSize(name);
+				typename OutputFormat::Output response(output);
 				method->call(args, response, {}, {});
 			}
 			return true;
@@ -551,20 +536,19 @@ struct DownloadIfFilePresent {
 	}
 };
 
-template <AssembledString ResponseStringType, HttpGetResponder<ResponseStringType> PageProvider,
-		/*DownloadRpcDispatcher<ResponseStringType>*/ typename DispatcherType = const DownloadIfFilePresent<ResponseStringType>>
+template <BetterAssembledString ResponseStringType, HttpGetResponder<GeneralisedBuffer&> PageProvider,
+		/*DownloadRpcDispatcher<ResponseStringType>*/ typename DispatcherType = const DownloadIfFilePresent<HtmlMessageEncoding<ResponseStringType>>>
 class RpcGetResponder {
 	PageProvider* _provider = nullptr;
 	IRemoteCallable* _callable = nullptr;
-	static constexpr DownloadIfFilePresent<ResponseStringType> defaultDispatcher = {};
+	static constexpr DownloadIfFilePresent<HtmlMessageEncoding<ResponseStringType>> defaultDispatcher = {};
 	DispatcherType* _dispatcher = nullptr;
 
 public:
 	RpcGetResponder(PageProvider* provider, IRemoteCallable* callable, DispatcherType* dispatcher = &defaultDispatcher)
 		: _provider(provider), _callable(callable), _dispatcher(dispatcher) {}
 
-	template <typename HttpWriteStarter>
-	bool get(std::string_view entirePath, const HttpWriteStarter& writeResponse) {
+	bool get(std::string_view entirePath, IWriteStarter& writeResponse) {
 		auto transition = entirePath.find_first_of('?');
 		std::string_view path;
 		const IRemoteCallable* method = nullptr;
@@ -580,28 +564,26 @@ public:
 			path = entirePath;
 		}
 		return _dispatcher->dispatch(method, method ? &*inputParsed : nullptr, writeResponse,
-				[&] (typename DispatcherType::template GetterCallbackArg<HttpWriteStarter> outputProvider) -> bool {
+				[&] (IWriteStarter& outputProvider) -> bool {
 			return _provider->get(path, outputProvider);
 		});
 	}
 };
 
 struct DummyPostResponder {
-	template <HttpWriteStarter WriteStarter>
-	static bool post(std::string_view path, std::string_view, std::span<char> request, WriteStarter) {
+	static bool post(std::string_view, std::string_view, std::span<char>, IWriteStarter&) {
 		return false;
 	}
 };
 
+template <BetterAssembledString ResponseStringType = std::string>
 class HtmlPostResponder {
 	IRemoteCallable* _callable = nullptr;
 public:
 	HtmlPostResponder(IRemoteCallable* callable) : _callable(callable) {}
 
-	template <HttpWriteStarter WriteStarter>
-	bool post(std::string_view path, std::string_view, std::span<char> request, const WriteStarter&) {
+	bool post(std::string_view path, std::string_view, std::span<char> request, const IWriteStarter&) {
 		std::string_view editedPath = path.substr(1);
-		using ResponseStringType = std::remove_reference_t<decltype(std::declval<WriteStarter>()(std::string_view("")))>;
 		const IRemoteCallable* method = PathWithSeparator<"/", ResponseStringType>::findCallable(editedPath, _callable);
 		if (!method)
 			return false;
@@ -613,7 +595,7 @@ public:
 };
 
 template <BetterAssembledString StringType = std::string, HttpGetResponder<StringType> GetResponder = const DummyGetResponder,
-		HttpPostResponder<StringType> PostResponder = const DummyPostResponder>
+		HttpPostResponder<StringType> PostResponder = const DummyPostResponder, std::derived_from<GeneralisedBuffer> ExpandingBufferType = NonExpandingBuffer<2048>>
 class HttpServer {
 	struct Responders {
 		GetResponder* getResponder = nullptr;
@@ -706,21 +688,80 @@ public:
 				}
 
 				bool success = false;
-				int headerSize = 0;
-				constexpr char correctIntro[] = "HTTP/1.1 200 OK\r\nContent-Length:";
-				constexpr char unsetSize[] = " 0         ";
+				constexpr static char correctIntro[] = "HTTP/1.1 200 OK\r\nContent-Length:";
+				constexpr static char unsetSize[] = " 0         ";
 				StringType response;
-				bool startedResponse = false;
-				auto correctResponseWriter = [&](std::string_view contentType) -> StringType& {
-					startedResponse = true;
-					response += correctIntro;
-					response += unsetSize;
-					response += "\r\nContent-Type: ";
-					response += contentType;
-					response += "\r\n\r\n";
-					headerSize = response.size();
-					return response;
+
+				constexpr int StaticSize = 1024;
+				struct StreamingBufferType : StreamingBuffer<StaticSize> {
+					Callback<void(std::span<const char>)> writer;
+					void flush() override {
+						writer({_basic.data(), size_t(size() - _sizeAtLastFlush)});
+					}
+					StreamingBufferType(decltype(writer) writer) : writer(writer) {}
 				};
+
+				struct WriteStarter : IWriteStarter {
+					Callback<void(std::span<const char>)> writer;
+					bool startedResponse = false;
+					int headerSize = 0;
+
+					std::aligned_storage_t<std::max(sizeof(StreamingBufferType), sizeof(ExpandingBufferType)),
+							std::max(alignof(StreamingBufferType), alignof(ExpandingBufferType))> space = {};
+					StreamingBufferType* streamingBuffer = nullptr;
+					ExpandingBufferType* expandingBuffer = nullptr;
+
+
+					WriteStarter(decltype(writer) writer) : writer(writer) {}
+					~WriteStarter() {
+						if (streamingBuffer)
+							streamingBuffer->~GeneralisedBuffer();
+						else if (expandingBuffer)
+							expandingBuffer->~GeneralisedBuffer();
+					}
+
+					void startCorrectResponse(GeneralisedBuffer& target, std::string_view contentType, std::optional<int> size = std::nullopt) {
+						startedResponse = true;
+						target += correctIntro;
+						if (!size.has_value()) {
+							target += unsetSize;
+						} else {
+							std::array<char, sizeof(unsetSize)> sizeBuffer;
+							memcpy(sizeBuffer.data(), unsetSize, sizeBuffer.size());
+							auto written = std::to_chars(sizeBuffer.data() + 1, sizeBuffer.data() + sizeBuffer.size(), *size);
+							target += std::string_view(sizeBuffer.data(), written.ptr - sizeBuffer.data());
+						}
+						target += "\r\nContent-Type: ";
+						target += contentType;
+						target += "\r\n\r\n";
+						headerSize = target.size();
+					}
+
+					void finalise() {
+						if (expandingBuffer) {
+							std::string_view view = *expandingBuffer;
+							std::to_chars(const_cast<char*>(&view[sizeof(correctIntro)]),
+									const_cast<char*>(&view[sizeof(correctIntro) + sizeof(unsetSize)]),
+									view.size() - headerSize);
+							writer(view);
+						} else if (streamingBuffer) {
+							streamingBuffer->flush();
+						}
+					}
+
+					GeneralisedBuffer& writeUnknownSize(std::string_view resourceType) override {
+						expandingBuffer = new (&space) ExpandingBufferType();
+						startCorrectResponse(*expandingBuffer, resourceType);
+						return *expandingBuffer;
+					}
+					GeneralisedBuffer& writeKnownSize(std::string_view resourceType, int64_t size) override {
+						streamingBuffer = new (&space) StreamingBufferType{writer};
+						startCorrectResponse(*streamingBuffer, resourceType, size);
+						return *streamingBuffer;
+					}
+				};
+
+				WriteStarter correctResponseWriter = {writer};
 				std::string_view path{input.data() + _state.path.first, size_t(_state.path.second)};
 				try {
 					if (_state.requestType == ParseState::GET_REQUEST) {
@@ -752,17 +793,12 @@ public:
 					writer(std::span<const char>(errorMessage.begin(), errorMessage.size()));
 				}
 				if (success) {
-					if (startedResponse) {
-						std::string_view responseView = response;
-						// For whatever reasons, std::string_view::operator[] chooses the const version
-						std::to_chars(const_cast<char*>(&responseView[sizeof(correctIntro)]),
-								const_cast<char*>(&responseView[sizeof(correctIntro) + sizeof(unsetSize)]),
-								response.size() - headerSize);
-						writer(response);
+					if (correctResponseWriter.startedResponse) {
+						correctResponseWriter.finalise();
 						restore();
 					} else {
-						constexpr std::string_view errorMessage = "HTTP/1.1 204 No Content\r\n\r\n";
-						writer(std::span<const char>(errorMessage.begin(), errorMessage.size()));
+						constexpr std::string_view noResponse = "HTTP/1.1 204 No Content\r\n\r\n";
+						writer(std::span<const char>(noResponse.begin(), noResponse.size()));
 						restore();
 					}
 				}
@@ -788,7 +824,7 @@ public:
 	}
 };
 
-template <BetterAssembledString StringT = std::string>
+template <BetterAssembledString LocalStringType = std::string, std::derived_from<GeneralisedBuffer> ExpandingBufferType = NonExpandingBuffer<>>
 class HttpClient : public IRpcResponder {
 	ITcpClient* _client = nullptr;
 	RequestToken _lastTokenWritten = {0};
@@ -797,11 +833,11 @@ class HttpClient : public IRpcResponder {
 
 	RequestToken send(UserId, const IRemoteCallable* method,
 			Callback<void(IStructuredOutput&, RequestToken)> request) override {
-		auto methodName = PathWithSeparator<"/", StringT>::constructPath(method);
+		auto methodName = PathWithSeparator<"/", LocalStringType>::constructPath(method);
 
 		return post("application/x-www-form-urlencoded",
-					[methodName, &request] (StringT& output, RequestToken token) {
-			typename HtmlMessageEncoding<StringT>::Output writer = output;
+					[methodName, &request] (GeneralisedBuffer& output, RequestToken token) {
+			typename HtmlMessageEncoding<LocalStringType>::Output writer = output;
 			request(writer, token);
 		});
 	}
@@ -811,7 +847,7 @@ class HttpClient : public IRpcResponder {
 				remoteError("Server did not respond with OK");
 				return false;
 			}
-			typename HtmlMessageEncoding<StringT>::Input input = {std::string_view(data.data(), data.size())};
+			typename HtmlMessageEncoding<LocalStringType>::Input input = {std::string_view(data.data(), data.size())};
 			reader(input);
 			return true;
 		});
@@ -845,13 +881,12 @@ class HttpClient : public IRpcResponder {
 	};
 
 public:
-	using StringType = StringT;
 	HttpClient(ITcpClient* client, std::string_view virtualHost) : _client(client), _virtualHost(virtualHost) {}
 
 	RequestToken post(std::string_view contentType,
-			Callback<void(StringType&, RequestToken token)> request) {
+			Callback<void(ExpandingBufferType&, RequestToken token)> request) {
 		_lastTokenWritten.id++;
-		StringType written;
+		ExpandingBufferType written;
 		constexpr char correctIntro[] = "POST / HTTP/1.1\r\nContent-Length: ";
 		constexpr char unsetSize[] = "0         ";
 		written += correctIntro;
@@ -867,12 +902,12 @@ public:
 		std::to_chars(const_cast<char*>(&reqView[sizeof(correctIntro) - 1]),
 				const_cast<char*>(&reqView[sizeof(correctIntro) + sizeof(unsetSize)]),
 				written.size() - sizeBefore);
-		_client->writeRequest(std::span<char>{written.data(), written.size()});
+		_client->writeRequest(written);
 		return _lastTokenWritten;
 	}
 
 	RequestToken get(std::string_view resource = "/") {
-		StringType written;
+		ExpandingBufferType written;
 		constexpr StringLiteral intro = "GET ";
 		constexpr StringLiteral mid = " HTTP/1.1\r\nHost: ";
 		constexpr StringLiteral suffix = "\r\n\r\n";
@@ -882,7 +917,7 @@ public:
 		written += _virtualHost;
 		written += suffix;
 		_lastTokenWritten.id++;
-		_client->writeRequest(std::span<char>{written.data(), written.size()});
+		_client->writeRequest(written);
 		return _lastTokenWritten;
 	}
 

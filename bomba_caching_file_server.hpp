@@ -36,6 +36,7 @@ class CachingFileServer {
 	};
 	std::unordered_map<std::string, std::string> _extensions;
 	std::unordered_map<std::string, CachedFile> _cache;
+	std::vector<std::string> _fileNames;
 	std::vector<std::function<void()>> _modifiers;
 	std::shared_mutex _mutex;
 
@@ -62,10 +63,12 @@ class CachingFileServer {
 		file.seekg(0, std::ios::beg);
 		entry.contents.insert(entry.contents.begin(), std::istream_iterator<char>(file), std::istream_iterator<char>());
 
-		_cache.insert(std::make_pair(localPath, std::move(entry)));
+		_fileNames.emplace_back(localPath);
+		_cache.insert(std::make_pair(std::string_view(_fileNames.back()), std::move(entry)));
 	}
 	void reloadInternal() {
 		_cache.clear();
+		_fileNames.clear();
 		cacheFolder(_root, "");
 		for (auto& modifier : _modifiers) {
 			modifier();
@@ -95,13 +98,12 @@ public:
 		reload();
 	}
 
-	template <HttpWriteStarter GetterCallback>
-	bool get(std::string_view path, GetterCallback outputProvider) {
+	bool get(std::string_view path, IWriteStarter& outputProvider) {
 		std::shared_lock lock(_mutex);
 		auto found = _cache.find(std::string(path));
 		if (found == _cache.end()) [[unlikely]]
 				return false;
-		auto& output = outputProvider(found->second.type);
+		auto& output = outputProvider.writeKnownSize(found->second.type, found->second.contents.size());
 		output += std::string_view(found->second.contents.data(), found->second.contents.size());
 		return true;
 	}

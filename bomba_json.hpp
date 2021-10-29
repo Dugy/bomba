@@ -13,11 +13,11 @@
 
 namespace Bomba {
 
-template <AssembledString StringType = std::string>
+template <BetterAssembledString LocalStringType = std::string, AssembledString OutputStringType = LocalStringType>
 struct BasicJson {
 	class Input : public IStructuredInput {
 		std::string_view _contents;
-		StringType _resultBuffer;
+		LocalStringType _resultBuffer;
 		int _position = 0;
 		
 		void endOfInput() {
@@ -127,7 +127,7 @@ struct BasicJson {
 			eatWhitespace();
 			char readingChar = getChar();
 			if (readingChar != '"') [[unlikely]] {
-				std::cout << "Found " << readingChar << " instead of \"" << std::endl;
+//				std::cout << "Found " << readingChar << " instead of \"" << std::endl;
 				fail("Expected JSON string");
 			}
 			
@@ -248,7 +248,7 @@ struct BasicJson {
 	};
 
 	class Output : public IStructuredOutput {
-		StringType& _contents;
+		OutputStringType& _contents;
 		int _depth = 0;
 		bool _skipNewline = false;
 		
@@ -270,7 +270,7 @@ struct BasicJson {
 				_contents += '\t';
 		}
 	public:
-		Output(StringType& contents) : _contents(contents) {}
+		Output(OutputStringType& contents) : _contents(contents) {}
 		
 		void writeInt(Flags, int64_t value) final override {
 			writeValue(value);

@@ -28,12 +28,13 @@ enum class JsonRpcError {
 	INTERNAL_ERROR = -32603,
 };
 
-template <BetterAssembledString StringType = std::string>
+template <BetterAssembledString LocalStringType = std::string>
 class JsonRpcServerProtocol {
 	IRemoteCallable* _callable = nullptr;
+	using Json = BasicJson<LocalStringType, GeneralisedBuffer>;
 
 	bool respondInternal(IStructuredInput& input, IStructuredOutput& output, Callback<> onResponseStarted) {
-		constexpr auto noFlags = BasicJson<StringType>::Output::Flags::NONE;
+		constexpr auto noFlags = Json::Output::Flags::NONE;
 		bool failed = false;
 		bool responding = false;
 		IStructuredInput::Location idSeekingStartpoint;
@@ -110,7 +111,7 @@ class JsonRpcServerProtocol {
 			};
 			auto readMethod = [&] () {
 				auto path = input.readString(noFlags);
-				method = PathWithSeparator<".", StringType>::findCallable(path, _callable);
+				method = PathWithSeparator<".", LocalStringType>::findCallable(path, _callable);
 				if (!method) {
 					introduceError("Method not known", JsonRpcError::METHOD_NOT_FOUND);
 				}
@@ -177,17 +178,16 @@ public:
 	JsonRpcServerProtocol(IRemoteCallable* callable) : _callable(callable) {
 	}
 
-	template <HttpWriteStarter WriteStarter>
-	bool post(std::string_view, std::string_view contentType, std::span<const char> request, const WriteStarter& writeStarter) {
+	bool post(std::string_view, std::string_view contentType, std::span<const char> request, IWriteStarter& writeStarter) {
 		if (contentType != "application/json") [[unlikely]] {
 			return false;
 		}
 
-		auto& response = writeStarter("application/json");
-		constexpr auto noFlags = BasicJson<StringType>::Output::Flags::NONE;
+		GeneralisedBuffer& response = writeStarter.writeUnknownSize("application/json");
+		constexpr auto noFlags = Json::Output::Flags::NONE;
 				
-		typename BasicJson<StringType>::Input input(std::string_view(request.data(), request.size()));
-		typename BasicJson<StringType>::Output output(response);
+		typename Json::Input input(std::string_view(request.data(), request.size()));
+		typename Json::Output output(response);
 
 		auto inputType = input.identifyType(noFlags);
 		if (inputType == IStructuredInput::TYPE_ARRAY) {
@@ -217,10 +217,11 @@ public:
 	}
 };
 
-template <BetterAssembledString StringType = std::string, HttpGetResponder<StringType> GetResponder = const DummyGetResponder>
+template <BetterAssembledString LocalStringType = std::string, HttpGetResponder<LocalStringType> GetResponder = const DummyGetResponder,
+		  std::derived_from<GeneralisedBuffer> ExpandingBufferType = NonExpandingBuffer<2048>>
 class JsonRpcServer {
-	JsonRpcServerProtocol<StringType> _protocol;
-	HttpServer<StringType, GetResponder, decltype(_protocol)> _http;
+	JsonRpcServerProtocol<LocalStringType> _protocol;
+	HttpServer<LocalStringType, GetResponder, decltype(_protocol), ExpandingBufferType> _http;
 public:
 	using Session = typename decltype(_http)::Session;
 	JsonRpcServer(IRemoteCallable* callable, GetResponder* getResponder = nullptr)
@@ -231,18 +232,19 @@ public:
 	}
 };
 
-template <typename HttpType, BetterAssembledString StringType = std::string>
+template <typename HttpType, BetterAssembledString LocalStringType = std::string>
 class JsonRpcClientProtocol : public IRpcResponder {
-	constexpr static auto noFlags = BasicJson<StringType>::Output::Flags::NONE;
+	using Json = BasicJson<LocalStringType, GeneralisedBuffer>;
+	constexpr static auto noFlags = Json::Output::Flags::NONE;
 	HttpType* _upper = nullptr;
 public:
 	
 	RequestToken send(UserId user, const IRemoteCallable* method,
 				Callback<void(IStructuredOutput&, RequestToken token)> request) final override {
-		auto methodName = PathWithSeparator<".", StringType>::constructPath(method);
+		auto methodName = PathWithSeparator<".", LocalStringType>::constructPath(method);
 		return _upper->post("application/json", [methodName, &request]
-					(typename HttpType::StringType& output, RequestToken token) {
-			typename BasicJson<StringType>::Output writer = output;
+					(GeneralisedBuffer& output, RequestToken token) {
+			typename Json::Output writer(output);
 			writer.startWritingObject(noFlags, 3);
 			writer.introduceObjectMember(noFlags, "jsonrpc", 0);
 			writer.writeString(noFlags, "2.0");
@@ -260,7 +262,7 @@ public:
 		_upper->getResponse(token, [&reader, &retval, token] (std::span<char> message, bool success) {
 			if (!success)
 				return false;
-			typename BasicJson<StringType>::Input input(std::string_view(message.data(), message.size()));
+			typename Json::Input input(std::string_view(message.data(), message.size()));
 			input.startReadingObject(noFlags);
 			std::optional<std::string_view> nextName;
 			while ((nextName = input.nextObjectElement(noFlags))) {
@@ -306,19 +308,19 @@ public:
 };
 
 namespace Detail {
-template <BetterAssembledString StringType>
+template <BetterAssembledString StringType, std::derived_from<GeneralisedBuffer> ExpandingBufferType>
 struct HttpOwner {
-	HttpClient<StringType> http;
+	HttpClient<StringType, ExpandingBufferType> http;
 };
 } // namespace Detail
 
 
-template <BetterAssembledString StringType = std::string>
-class JsonRpcClient : private Detail::HttpOwner<StringType>, public JsonRpcClientProtocol<HttpClient<StringType>> {
-	using HttpOwner = Detail::HttpOwner<StringType>;
+template <BetterAssembledString StringType = std::string, std::derived_from<GeneralisedBuffer> ExpandingBufferType = NonExpandingBuffer<>>
+class JsonRpcClient : private Detail::HttpOwner<StringType, ExpandingBufferType>, public JsonRpcClientProtocol<HttpClient<StringType>> {
+	using HttpOwner = Detail::HttpOwner<StringType, ExpandingBufferType>;
 public:
 	JsonRpcClient(IRemoteCallable* callable, ITcpClient* client, std::string_view virtualHost)
-			: Detail::HttpOwner<StringType>{{client, virtualHost}},
+			: Detail::HttpOwner<StringType, ExpandingBufferType>{{client, virtualHost}},
 			  JsonRpcClientProtocol<HttpClient<StringType>>(callable, &(HttpOwner::http)) {}
 
 	bool hasResponse(RequestToken token) override {

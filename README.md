@@ -1,9 +1,9 @@
 # Bomba
-C++20 library for convenient implementation of remote procedure calls and serialisation. Currently, it's a work in progress, it's usable, but there may be bugs, security issues or messy error handling.
+C++20 library for convenient implementation of remote procedure calls and serialisation. It's not complete yet, but it's usable. There may be bugs, security issues or messy error handling.
 
 To maximise convenience, it needs no code generation and no macros and is entirely header-only, yet its verbosity is at minimum. It is also usable without any additional libraries.
 
-It's written in bleeding edge C\++20. Works on GCC 12, Clang 13 or MSVC 19. Before C\++23 reflection (`reflexpr` expression) is available, a GCC-only trick relying on Defect Report 2118 is used. Clang and MSVC have to use a different implementation with slighly worse performance. It's intended to be embedded-friendly as it can be used without any dynamic allocation when compiled by GCC and it needs dynamic allocation only during initialisation if compiled with Clang or MSVC). Currently the only available implementation of the networking layer is based on `std::experimental::networking` and uses some dynamic allocation, so that part (about 130 lines) might need reimplementation if used outside PC architectures.
+It's written in bleeding edge C\++20. Works on GCC 12, Clang 13 or MSVC 19. Before C\++23 reflection (`reflexpr` expression) is available, a GCC-only trick relying on Defect Report 2118 is used. Clang and MSVC have to use a different implementation with slightly worse performance. It's intended to be embedded-friendly as it can be used without any dynamic allocation when compiled by GCC and no dynamic allocation after initialisation if compiled with Clang or MSVC. Currently the only available implementation of the networking layer is based on `std::experimental::networking` and uses some dynamic allocation, so that part (about 130 lines) might need reimplementation if used outside PC architectures.
 
 ## Showcase
 After setting up the components (examples are below), this is all the code needed to define an API call that allows remotely calling a lambda:
@@ -34,14 +34,14 @@ Alternatively, a custom page can call `notify_me()`.
 Bomba is fully usable, but some additional features are planned.
 
 ### Protocols
-Bomba implements several communication protocols for the purpose of communication in a standardised way supported by many other libraries. These are implemented in a way that avoids dynamic allocation, expecting the networking layer to provide buffers (so that some buffers could be provided in a restrictive embedded environment).
+Bomba implements several communication protocols for the purpose of communication in a standardised way supported by many other libraries. These are implemented in a way that avoids dynamic allocation, but can be added easily (except some parts that can't be used on special platforms anyway).
 * HTTP - Minimal implementation, supporting only GET and POST, but usable as a web server with some interactive content
 * JSON-RPC - Built on top of HTTP POST
 
-Many other protocols should be possible to implement using the interfaces and concepts expected from protocols.
+Many other protocols should be possible to implement using the interfaces and concepts expected from protocols. They may be added in the future.
 
 ### Networking
-Currently, the only implementation available uses `std::experimental::networking` version 1 for OS-independent networking without any dependencies. Because `std::experimental::networking` is not expected on heavily restrictive platforms, it uses also some dynamic allocation (specifically `std::vector` for resizable buffers and to allocate instances).
+Currently, the only implementation available uses `std::experimental::networking` version 1 for OS-independent networking without any dependencies. Because `std::experimental::networking` is not expected on heavily restrictive platforms, this part uses also some dynamic allocation (specifically `std::vector` for expandable buffers and to allocate instances).
 
 Currently, there are two networking related classes:
 * `Bomba::TcpServer` (header `bomba_tcp_server.hpp`)
@@ -54,20 +54,18 @@ Currently, there are two networking related classes:
 	* It's possible to check if the response was already received, eliminating the need to block entirely
 
 ### Performance
-I have not optimised the code much yet.
-
-When testing the HTTP server component, the JMeter tool reported about 33000 responses to requests per second from a singlethreaded server (which is similar performance to Nginx), but it appeared to be more of a JMeter limitation. The server internally reported an average HTTP request processing time about 6100 nanoseconds and JSON-RPC request processing time 7600 nanoseconds, but this time could be greater because it did not track the overhead caused by the OS. The measurement was done on a laptop CPU.
+As a side effect of restricting dynamic allocation for embedded-friendliness, the library has very good performance. JMeter reports about 60'000 HTTP requests per second singlethreaded on a laptop CPU with turbo boost disabled (which is about twice the performance of Nginx), but this is mainly a limit of the networking interface. Internally measured time to parse and respond to a request is lower. If large numbers of requests are batched into massive TCP packets, the throughput approaches 500'000 packets per second per second singlethreaded. Calling a function via JSON-RPC adds about 1 microsecond to the processing time.
 
 ## Error handling
 Common problems like incomplete requests in receive buffers are handled by returning enums for these kinds of calls, either alone or as part of `std::pair` or `std::tuple` with other values.
 
-Less common problems like parse errors are handled by exceptions. The class representing the toplevel protocol catches all exceptions and turns them into Error 500 responses. Other protocols are expected to handle their types of errors.
+Less common problems like JSON parse errors are handled by exceptions. The class representing the toplevel protocol catches all exceptions and turns them into Error 500 responses. Other protocols are expected to handle their types of errors.
 
 JSON-RPC handles all `std::exception` instances, converting them to JSON-RPC errors. The exact error code shown might not be completely accurate because the specification is not very clear about it and I chose to interpret it in a way that's the most convenient the implement.
 
 The networking client throws an exception if the call fails so that an incorrect response is not returned. Thus, an exception in the server is propagated to the client (the exact type of exception will not be retained, obviously).
 
-It was experimentally determined that an exception adds 5 - 10 microseconds the processing of a request, which does not lead to a drastic slowdown. I chose this option to optimise for successful calls and because of the atrocious verbosity of checking error codes after every function call.
+It was experimentally determined that an exception adds 5 - 10 microseconds the processing of a request, which is comparable to the time needed to process a request. I chose this option to optimise for successful calls and because of the atrocious verbosity of checking error codes after every function call.
 
 If there is a very strong reason not to use exceptions, it's intended to be avoidable. Exceptions are always called by functions that throw them and these functions can be replaced if some macros are set. This will not cause stack unwinding and is not debugged or tested yet.
 
@@ -98,6 +96,8 @@ std::string written = point.serialise<Bomba::BasicJson<>>();
 point.deserialise<Bomba::BasicJson<>>(reading);
 ```
 
+To use different internal type than `std::string` for unescaping strings, set it as template argument. More on this is [here](#custom-string-type). To append the result of `serialise()` to an existing string, use its overload that accepts a reference to the output as argument. The output type is set by the second template argument, which defaults to the type of the first argument.
+
 ### Remote Procedure Call
 You can define an RPC function by declaring this:
 ```C++
@@ -114,7 +114,7 @@ coutPrinter("Hello warm world!");
 
 Depending on the runtime configuration, this will either call the lambda or send a request to the server, have it run the lambda there, send a response back and return the value output by the server.
 
-It doesn't work on Clang because it doesn't support lambdas in unevaluated contexts yet.
+This will trigger errors in compilers and linters that don't support lambdas in unevaluated expressions (from C++20).
 
 This implements the `IRemoteCallable` interface that can be used both as a client and as a server. If it's used as a client, it behaves like a functor that calls the server's method and returns the result the server has sent. If it's used as a server, it can be called from a client. It is possible to nest these structures:
 ```C++
@@ -139,6 +139,8 @@ struct MessageStorage : RpcObject<MessageStorage> {
 ```
 
 If an instance to a parent class is expected as the first argument, it acts like a member function. Otherwise, it is a static function. Both will appear in with the listed names in the parent's namespace in the RPC (e.g. if the parent is accessed as `storage` and the delimeter is a dot, then `setMessage` will be called as `storage.setMessage`).
+
+It needs a workaround on Clang because it considers the parent class to be only forward declared at that point.
 
 For the purposes of customisation, you can implement `IRemoteCallable` yourself, but it can be impractical without `RpcLambda` (`RpcMember` inherits from it to allow connecting it to `RpcObject`).
 
@@ -290,6 +292,12 @@ Bomba::BackgroundTcpServer<decltype(jsonRpcServer)> server = {&jsonRpcServer, 80
 server.run();
 ```
 
+This cannot send a response larger than a 1 kiB. This restriction can be avoided using `Bomba::ExpandingBuffer` from `bomba_expanding_containers.hpp`, changing the `JsonRpcServer` declaration to:
+```C++
+Bomba::JsonRpcServer<std::string, const Bomba::DummyGetResponder, Bomba::ExpandingBuffer<>> jsonRpcServer = {&method};
+```
+It will cause it to dynamically allocate if the 1 kiB buffer is not enough (if you want a larger static buffer, set it as a template argument, i.e. `ExpandingBuffer<2048>` for a 2 kiB one).
+
 #### A JSON-RPC server that also responds to GET requests
 The `JsonRpcServer` class also accepts all the `getResponder` classes from earlier examples:
 ```C++
@@ -312,6 +320,8 @@ Bomba::BackgroundTcpServer<decltype(jsonRpcServer)> server = {&jsonRpcServer, 80
 server.run();
 ```
 
+Again, you need to use `Bomba::ExpandingBuffer<>` as third template argument to `JsonRpcServer` to dynamically allocate a larger response buffers than 1 kiB. This restriction does not apply to downloaded files from `CachingFileServer`, their size is known when writing the response header and there is no need to keep the entire response in memory.
+
 #### A JSON-RPC server that can provide its documentation and web content
 The JSON-RPC protocol does not specify a format for describing the API, so a similar protocol's documentation can be generated to describe the API in good detail.
 ```C++
@@ -322,6 +332,7 @@ The JSON-RPC protocol does not specify a format for describing the API, so a sim
 #include "bomba_json_rpc.hpp"
 #include "bomba_caching_file_server.hpp"
 #include "bomba_json_wsp_description.hpp"
+#include "bomba_expanding_containers.hpp"
 
 struct RpcClass : Bomba::RpcObject<RpcClass> {
 	std::string message;
@@ -341,24 +352,25 @@ int main(int argc, char** argv) {
 
 	Bomba::CachingFileServer cachingFileServer("public_html");
 	cachingFileServer.addGeneratedFile("api_description.json", description);
-	Bomba::JsonRpcServer<std::string, Bomba::CachingFileServer> jsonRpc(&method, &cachingFileServer);
+	Bomba::JsonRpcServer<std::string, Bomba::CachingFileServer, Bomba::ExpandingBuffer<>> jsonRpc(&method, &cachingFileServer);
 	Bomba::TcpServer server(&jsonRpc, 8080);
 	server.run();
 }
 ```
 
 ### Clients
-Implementing a better client than `Bomba::SyncNetworkClient` might allow more functionality, but it should be good enough for convenient synchronous requests.
+Implementing a better client than `Bomba::SyncNetworkClient` might allow more functionality, but it should be good enough for many use cases.
 
 #### Downloading a resource through HTTP
 This will download and print the index page of anything served at `0.0.0.0:8080`. This is not the intended usage
 ```C++
 #include "bomba_sync_client.hpp"
 #include "bomba_http.hpp"
+#include "bomba_expanding_containers.hpp"
 //...
 
 Bomba::SyncNetworkClient client("0.0.0.0", "8080");
-Bomba::HttpClient<> http(&client, "0.0.0.0");
+Bomba::HttpClient<std::string, Bomba::ExpandingBuffer<>> http(&client, "0.0.0.0");
 auto identifier = http.get("/");
 // Can do other stuff here, like send more requests
 http.getResponse(identifier, [](std::span<char> response) {
@@ -395,6 +407,7 @@ auto future = method.async("Hearken ye", 1, false);
 if (future.is_ready())
 	future.get();
 ```
+Note: Unlike the previous example, this one doesn't use `ExpandingBuffer`, so it will not allow requests larger than 1 kiB. Easy to change.
 
 #### JSON-RPC client
 This is the client counterpart for the [JSON-RPC server example](#a-basic-json-rpc-server):

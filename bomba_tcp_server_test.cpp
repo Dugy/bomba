@@ -8,6 +8,7 @@
 #include "bomba_json_rpc.hpp"
 #include "bomba_caching_file_server.hpp"
 #include "bomba_json_wsp_description.hpp"
+#include "bomba_expanding_containers.hpp"
 
 struct RpcMessage : Bomba::Serialisable<RpcMessage> {
 	std::string message = key<"message">;
@@ -43,7 +44,7 @@ int main(int argc, char** argv) {
 
 	Bomba::CachingFileServer cachingFileServer("../public_html");
 	cachingFileServer.addGeneratedFile("api_description.json", description);
-	Bomba::JsonRpcServer<std::string, Bomba::CachingFileServer> jsonRpc(&method, &cachingFileServer);
+	Bomba::JsonRpcServer<std::string, Bomba::CachingFileServer, Bomba::ExpandingBuffer<1024>> jsonRpc(&method, &cachingFileServer);
 	Bomba::TcpServer server(&jsonRpc, 8080);
 	server.run();
 }

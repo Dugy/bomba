@@ -9,6 +9,7 @@
 #include "bomba_tcp_server.hpp"
 #include "bomba_sync_client.hpp"
 #include "bomba_json_wsp_description.hpp"
+#include "bomba_expanding_containers.hpp"
 #include <string>
 #include <vector>
 #include <map>
@@ -16,7 +17,8 @@
 
 using namespace Bomba;
 
-using JSON = BasicJson<>;
+using StringJSON = BasicJson<std::string, std::string>;
+using JSON = BasicJson<std::string, GeneralisedBuffer&>;
 
 constexpr static auto noFlags = JSON::Output::Flags::NONE;
 
@@ -270,7 +272,9 @@ struct FakeHttp {
 
 	template <typename Lambda>
 	RequestToken post(std::string_view contentType, const Lambda& call) {
-		call(written, tokenToGive);
+		ExpandingBuffer<> buffer;
+		call(buffer, tokenToGive);
+		written.append(std::span<char>(buffer).data(), std::span<char>(buffer).size());
 		return tokenToGive;
 	}
 
@@ -362,7 +366,7 @@ int main(int argc, char** argv) {
 			"}";
 	{
 		std::cout << "Testing JSON write" << std::endl;
-		std::string result;
+		Bomba::ExpandingBuffer result;
 		JSON::Output out(result);
 
 		out.startWritingObject(noFlags, 4);
@@ -381,7 +385,7 @@ int main(int argc, char** argv) {
 		out.endWritingArray(noFlags);
 		out.endWritingObject(noFlags);
 
-		doATest(result, simpleJsonCode);
+		doATest(std::string_view(result), simpleJsonCode);
 	}
 
 	{
@@ -491,7 +495,7 @@ int main(int argc, char** argv) {
 		tested.tags = {"not red", "triangle", "super"};
 		tested.notes = {{ "none", "nil"}, {"nothing", "null"}};
 		tested.story = nullptr;
-		std::string written = tested.serialise<JSON>();
+		std::string written = tested.serialise<StringJSON>();
 		doATest(written, dummyObjectJson);
 
 		DummyObject tested2;
@@ -519,7 +523,7 @@ int main(int argc, char** argv) {
 		tested.index = 8;
 		tested.subIndex = 15;
 		tested.contents = "Not much at this point";
-		std::string written = tested.serialise<JSON>();
+		std::string written = tested.serialise<StringJSON>();
 		doATest(written, standardObjectJson);
 
 		std::cout << "Testing Serialisable class read" << std::endl;
@@ -529,6 +533,33 @@ int main(int argc, char** argv) {
 		doATest(tested2.subIndex, 15);
 		doATest(tested2.deleted, true);
 		doATest(tested2.contents, "Not much at this point");
+	}
+	
+	{
+		std::cout << "Testing buffers" << std::endl;
+		
+		{
+			Bomba::ExpandingBuffer<3> buffer;
+			buffer += '1';
+			buffer += "10";
+			buffer += " trombones from heck";
+			doATest(std::string_view(buffer), "110 trombones from heck");
+		}
+		
+		{
+			struct TestStreamingBuffer : StreamingBuffer<3> {
+				std::string data;
+				void flush() override {
+					data += std::string_view(_basic.data(), _basic.size());
+					data += '\n';
+				}
+			};
+			TestStreamingBuffer buffer;
+			buffer += "15";
+			buffer += '3';
+			buffer += " bananas out of nowhere";
+			doATest(buffer.data, "153\n ba\nnan\nas \nout\n of\n no\nwhe\n");
+		}
 	}
 
 	const std::string dummyRpcRequest1 =
@@ -624,6 +655,17 @@ int main(int argc, char** argv) {
 			"		\"result\" : \"nevermind\"\n"
 			"	}\n"
 			"]";
+			
+	struct DummyWriteStarter : Bomba::IWriteStarter {
+		Bomba::ExpandingBuffer<1024> buffer;
+		GeneralisedBuffer& writeUnknownSize(std::string_view resourceType) override {
+			return buffer;
+		}
+		GeneralisedBuffer& writeKnownSize(std::string_view resourceType, int64_t size) override {
+			return buffer;
+		}
+	};
+	
 
 	{
 		std::cout << "Testing JSON-RPC server" << std::endl;
@@ -633,31 +675,30 @@ int main(int argc, char** argv) {
 		dummyRpc.setBackup(&dummyRpcBackup);
 		dummyRpc.message = "nevermind";
 		dummyRpcBackup.message = "actually...";
-		std::string result;
-		auto writeStarter = [&] (std::string_view) -> std::string& { return result; };
+		DummyWriteStarter writeStarter;
 		auto viewToSpan = [] (std::string_view str) { return std::span<const char>(str.data(), str.size()); };
 		JsonRpcServerProtocol protocol = &dummyRpc;
 		protocol.post("", "application/json", viewToSpan(dummyRpcRequest1), writeStarter);
-		doATest(result, dummyRpcReply1);
+		doATest(std::string_view(writeStarter.buffer), dummyRpcReply1);
 
-		result.clear();
+		writeStarter.buffer.clear();
 		protocol.post("", "application/json", viewToSpan(dummyRpcRequest2), writeStarter);
-		doATest(result, dummyRpcReply2);
+		doATest(std::string_view(writeStarter.buffer), dummyRpcReply2);
 		doATest(dummyRpc.time, 1366);
 
 		dummyRpc.time = 1200;
-		result.clear();
+		writeStarter.buffer.clear();
 		protocol.post("", "application/json", viewToSpan(dummyRpcRequest3), writeStarter);
-		doATest(result, dummyRpcReply3);
+		doATest(std::string_view(writeStarter.buffer), dummyRpcReply3);
 		doATest(dummyRpc.time, 1366);
 
-		result.clear();
+		writeStarter.buffer.clear();
 		protocol.post("", "application/json", viewToSpan(dummyRpcRequest4), writeStarter);
-		doATest(result, dummyRpcReply4);
+		doATest(std::string_view(writeStarter.buffer), dummyRpcReply4);
 
-		result.clear();
+		writeStarter.buffer.clear();
 		protocol.post("", "application/json", viewToSpan(dummyRpcRequest5), writeStarter);
-		doATest(result, dummyRpcReply5);
+		doATest(std::string_view(writeStarter.buffer), dummyRpcReply5);
 	}
 
 	{
@@ -732,18 +773,17 @@ int main(int argc, char** argv) {
 	{
 		std::cout << "Testing RPC object" << std::endl;
 		AdvancedRpcClass advancedRpc;
-		std::string result;
-		auto writeStarter = [&] (std::string_view) -> std::string& { return result; };
+		DummyWriteStarter writeStarter;
 		auto viewToSpan = [] (std::string_view str) { return std::span<const char>(str.data(), str.size()); };
 		Bomba::JsonRpcServerProtocol protocol = &advancedRpc;
 		protocol.post("", "application/json", viewToSpan(advancedRpcRequest1), writeStarter);
-		doATest(result, advancedRpcResponse1);
-		result.clear();
+		doATest(std::string_view(writeStarter.buffer), advancedRpcResponse1);
+		writeStarter.buffer.clear();
 		protocol.post("", "application/json", viewToSpan(advancedRpcRequest2), writeStarter);
-		doATest(result, advancedRpcResponse2);
-		result.clear();
+		doATest(std::string_view(writeStarter.buffer), advancedRpcResponse2);
+		writeStarter.buffer.clear();
 		protocol.post("", "application/json", viewToSpan(advancedRpcRequest3), writeStarter);
-		doATest(result, advancedRpcResponse3);
+		doATest(std::string_view(writeStarter.buffer), advancedRpcResponse3);
 
 		FakeHttp http;
 		Bomba::JsonRpcClientProtocol client{&advancedRpc, &http};
@@ -906,7 +946,7 @@ R"~(<!doctype html>
 			Bomba::SimpleGetResponder getResponder;
 			InlineMethod methodServer;
 			Bomba::RpcGetResponder<std::string, Bomba::SimpleGetResponder> betterGetResponder = {&getResponder, &methodServer};
-			Bomba::HtmlPostResponder postResponder = {&methodServer};
+			Bomba::HtmlPostResponder<> postResponder = {&methodServer};
 			Bomba::HttpServer<std::string, decltype(betterGetResponder), decltype(postResponder)> httpServer = {&betterGetResponder, &postResponder};
 			Bomba::BackgroundTcpServer<decltype(httpServer)> server = {&httpServer, 8901}; // Very unlikely this port will be used for something
 
@@ -1133,13 +1173,13 @@ R"~({
 })~";
 
 	auto printObjectDescription = [&] (const IDescribableSerialisable& printed) {
-		std::string written;
+		Bomba::ExpandingBuffer written;
 		JSON::Output jsonOutput(written);
 		jsonOutput.startWritingObject(SerialisationFlags::NONE, IStructuredOutput::UNKNOWN_SIZE);
 		JsonWspMembersDescription descriptionGenerator(jsonOutput);
 		printed.describe(descriptionGenerator);
 		jsonOutput.endWritingObject(SerialisationFlags::NONE);
-		return written;
+		return std::string(written);
 	};
 	
 	{
@@ -1156,13 +1196,13 @@ R"~({
 		doATest(written, "StandardObject");
 		
 		SuperStandardObject super;
-		written.clear();
-		JSON::Output jsonOutput(written);
+		Bomba::ExpandingBuffer written2;
+		JSON::Output jsonOutput(written2);
 		jsonOutput.startWritingObject(SerialisationFlags::NONE, IStructuredOutput::UNKNOWN_SIZE);
 		JsonWspTypeDescription description{jsonOutput};
 		super.listTypes(description);
 		jsonOutput.endWritingObject(SerialisationFlags::NONE);
-		doATest(written, expectedAutomaticSubtypesDescription);
+		doATest(std::string_view(written2), expectedAutomaticSubtypesDescription);
 	}
 	
 	const std::string expectedRpcDescription =
