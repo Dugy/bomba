@@ -1,5 +1,6 @@
 //usr/bin/g++ --std=c++20 -Wall $0 -g -lpthread -o ${o=`mktemp`} && exec $o $*
 #include <iostream>
+#include <vector>
 #include "bomba_core.hpp"
 #include "bomba_json.hpp"
 #include "bomba_object.hpp"
@@ -11,7 +12,6 @@
 #include "bomba_json_wsp_description.hpp"
 #include "bomba_expanding_containers.hpp"
 #include <string>
-#include <vector>
 #include <map>
 #include <memory>
 
@@ -676,7 +676,7 @@ int main(int argc, char** argv) {
 		dummyRpc.message = "nevermind";
 		dummyRpcBackup.message = "actually...";
 		DummyWriteStarter writeStarter;
-		auto viewToSpan = [] (std::string_view str) { return std::span<const char>(str.data(), str.size()); };
+		auto viewToSpan = [] (std::string_view str) { return std::span<char>(const_cast<char*>(str.data()), str.size()); };
 		JsonRpcServerProtocol protocol = &dummyRpc;
 		protocol.post("", "application/json", viewToSpan(dummyRpcRequest1), writeStarter);
 		doATest(std::string_view(writeStarter.buffer), dummyRpcReply1);
@@ -774,7 +774,7 @@ int main(int argc, char** argv) {
 		std::cout << "Testing RPC object" << std::endl;
 		AdvancedRpcClass advancedRpc;
 		DummyWriteStarter writeStarter;
-		auto viewToSpan = [] (std::string_view str) { return std::span<const char>(str.data(), str.size()); };
+		auto viewToSpan = [] (std::string_view str) { return std::span<char>(const_cast<char*>(str.data()), str.size()); };
 		Bomba::JsonRpcServerProtocol protocol = &advancedRpc;
 		protocol.post("", "application/json", viewToSpan(advancedRpcRequest1), writeStarter);
 		doATest(std::string_view(writeStarter.buffer), advancedRpcResponse1);
@@ -821,7 +821,7 @@ int main(int argc, char** argv) {
 		std::cout << "Testing HTTP client" << std::endl;
 
 		FakeClient client;
-		Bomba::HttpClient<> http(&client, "faecesbook.con");
+		Bomba::HttpClient http(&client, "faecesbook.con");
 		auto token = http.get("/conspiracy.html");
 		doATest(client.request, expectedGet);
 
@@ -861,7 +861,7 @@ R"~(<!doctype html>
 		Bomba::SimpleGetResponder getResponder;
 		getResponder.resource = someHtml;
 		Bomba::DummyPostResponder postResponder;
-		Bomba::HttpServer<std::string, Bomba::SimpleGetResponder, Bomba::DummyPostResponder> http = {&getResponder, &postResponder};
+		Bomba::HttpServer<std::string> http = {&getResponder, &postResponder};
 		FakeServer server = {&http};
 		auto [response, reaction] = server.respond(expectedGet);
 		doATest(int(reaction), int(ServerReaction::OK));
@@ -918,7 +918,7 @@ R"~(<!doctype html>
 		Bomba::SimpleGetResponder getResponder;
 		getResponder.resource = someHtml;
 		InlineMethod inlineMethod;
-		Bomba::RpcGetResponder<std::string, Bomba::SimpleGetResponder> betterGetResponder(&getResponder, &inlineMethod);
+		Bomba::RpcGetResponder<std::string> betterGetResponder(&getResponder, &inlineMethod);
 		Bomba::HtmlPostResponder postResponder(&inlineMethod);
 		Bomba::HttpServer http(&betterGetResponder, &postResponder);
 		FakeServer server = {&http};
@@ -945,9 +945,9 @@ R"~(<!doctype html>
 		struct Fixture {
 			Bomba::SimpleGetResponder getResponder;
 			InlineMethod methodServer;
-			Bomba::RpcGetResponder<std::string, Bomba::SimpleGetResponder> betterGetResponder = {&getResponder, &methodServer};
+			Bomba::RpcGetResponder<std::string> betterGetResponder = {&getResponder, &methodServer};
 			Bomba::HtmlPostResponder<> postResponder = {&methodServer};
-			Bomba::HttpServer<std::string, decltype(betterGetResponder), decltype(postResponder)> httpServer = {&betterGetResponder, &postResponder};
+			Bomba::HttpServer<std::string> httpServer = {&betterGetResponder, &postResponder};
 			Bomba::BackgroundTcpServer<decltype(httpServer)> server = {&httpServer, 8901}; // Very unlikely this port will be used for something
 
 			InlineMethod methodClient;
@@ -1092,7 +1092,7 @@ R"~(<!doctype html>
 		AdvancedRpcClass method;
 		Bomba::SimpleGetResponder getResponder;
 		getResponder.resource = someHtml;
-		Bomba::JsonRpcServer<std::string, decltype(getResponder)> jsonRpc(&method, &getResponder);
+		Bomba::JsonRpcServer<std::string> jsonRpc(&method, &getResponder);
 		FakeServer server = {&jsonRpc};
 		auto [response, reaction] = server.respond(expectedJsonRpcRequest);
 		doATest(int(reaction), int(ServerReaction::OK));

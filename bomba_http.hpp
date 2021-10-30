@@ -483,44 +483,63 @@ struct HtmlMessageEncoding {
 	};
 };
 
-template <typename T, typename AssembledStringType>
-concept HttpGetResponder = requires(T value, std::string_view input, IWriteStarter& writer) {
-	{ value.get(input, writer) } -> std::same_as<bool>;
+struct IHttpGetResponder {
+	virtual bool get(std::string_view input, IWriteStarter& writer) = 0;
 };
 
-template <typename T, typename AssembledStringType>
-concept HttpPostResponder = requires(T value, std::string_view input, std::span<char> body, IWriteStarter& writer) {
-	{ value.post(input, input, body, writer) } -> std::same_as<bool>;
-};
-
-struct DummyGetResponder {
-	static bool get(std::string_view, const IWriteStarter&) {
+struct DummyGetResponder : IHttpGetResponder {
+	bool get(std::string_view, IWriteStarter&) override {
 		return false;
 	}
 };
 
-struct SimpleGetResponder {
+struct SimpleGetResponder : IHttpGetResponder {
 	std::string_view resource;
 	std::string_view resourceType = "text/html";
-	bool get(std::string_view, IWriteStarter& writeResponse) {
+	bool get(std::string_view, IWriteStarter& writeResponse) override {
 		auto& response = writeResponse.writeKnownSize(std::string_view(resourceType), resource.size());
 		response += resource;
 		return true;
 	}
 };
 
-// Compiler dies on this, maybe there's an error but I can't find it
-//template <typename T, typename AssembledStringType>
-//concept DownloadRpcDispatcher = requires(T value, const IRemoteCallable* method, IStructuredInput* args,
-//		decltype ([] (std::string_view) -> AssembledStringType& {}) writer,
-//		decltype ([] (typename T::template GetterCallbackArg<decltype (writer)>) { return true; }) outputProvider) {
-//{ value.dispatch(method, args, writer, outputProvider) } -> std::same_as<bool>;
-//};
+struct IHttpPostResponder {
+	virtual bool post(std::string_view input, std::string_view bodyType, std::span<char> body, IWriteStarter& writer) = 0;
+};
+
+struct DummyPostResponder : IHttpPostResponder {
+	bool post(std::string_view, std::string_view, std::span<char>, IWriteStarter&) override {
+		return false;
+	}
+};
+
+template <BetterAssembledString ResponseStringType = std::string>
+class HtmlPostResponder : public IHttpPostResponder {
+	IRemoteCallable* _callable = nullptr;
+public:
+	HtmlPostResponder(IRemoteCallable* callable) : _callable(callable) {}
+
+	bool post(std::string_view path, std::string_view, std::span<char> request, IWriteStarter&) override {
+		std::string_view editedPath = path.substr(1);
+		const IRemoteCallable* method = PathWithSeparator<"/", ResponseStringType>::findCallable(editedPath, _callable);
+		if (!method)
+			return false;
+		typename HtmlMessageEncoding<ResponseStringType>::Input input = {std::string_view(request.data(), request.size())};
+		NullStructredOutput nullOutput;
+		method->call(&input, nullOutput, {}, {});
+		return true;
+	}
+};
+
+struct IHttpDispatcher {
+	virtual bool dispatch(const IRemoteCallable* method, IStructuredInput* args,
+						  IWriteStarter& outputProvider, Callback<bool(IWriteStarter&)> writer) const = 0;
+};
 
 template <typename OutputFormat, StringLiteral name = "application/x-www-form-urlencoded">
-struct DownloadIfFilePresent {
-	static bool dispatch(const IRemoteCallable* method, IStructuredInput* args,
-					IWriteStarter& outputProvider, Callback<bool(IWriteStarter&)> writer) {
+struct DownloadIfFilePresent : IHttpDispatcher {
+	bool dispatch(const IRemoteCallable* method, IStructuredInput* args,
+					IWriteStarter& outputProvider, Callback<bool(IWriteStarter&)> writer) const override {
 		bool fileFound = writer(outputProvider);
 		if (method) {
 			if (fileFound) {
@@ -536,19 +555,18 @@ struct DownloadIfFilePresent {
 	}
 };
 
-template <BetterAssembledString ResponseStringType, HttpGetResponder<GeneralisedBuffer&> PageProvider,
-		/*DownloadRpcDispatcher<ResponseStringType>*/ typename DispatcherType = const DownloadIfFilePresent<HtmlMessageEncoding<ResponseStringType>>>
-class RpcGetResponder {
-	PageProvider* _provider = nullptr;
+template <BetterAssembledString ResponseStringType = std::string>
+class RpcGetResponder : public IHttpGetResponder {
+	IHttpGetResponder* _provider = nullptr;
 	IRemoteCallable* _callable = nullptr;
 	static constexpr DownloadIfFilePresent<HtmlMessageEncoding<ResponseStringType>> defaultDispatcher = {};
-	DispatcherType* _dispatcher = nullptr;
+	const IHttpDispatcher* _dispatcher = nullptr;
 
 public:
-	RpcGetResponder(PageProvider* provider, IRemoteCallable* callable, DispatcherType* dispatcher = &defaultDispatcher)
+	RpcGetResponder(IHttpGetResponder* provider, IRemoteCallable* callable, const IHttpDispatcher* dispatcher = &defaultDispatcher)
 		: _provider(provider), _callable(callable), _dispatcher(dispatcher) {}
 
-	bool get(std::string_view entirePath, IWriteStarter& writeResponse) {
+	bool get(std::string_view entirePath, IWriteStarter& writeResponse) override {
 		auto transition = entirePath.find_first_of('?');
 		std::string_view path;
 		const IRemoteCallable* method = nullptr;
@@ -570,40 +588,15 @@ public:
 	}
 };
 
-struct DummyPostResponder {
-	static bool post(std::string_view, std::string_view, std::span<char>, IWriteStarter&) {
-		return false;
-	}
-};
-
-template <BetterAssembledString ResponseStringType = std::string>
-class HtmlPostResponder {
-	IRemoteCallable* _callable = nullptr;
-public:
-	HtmlPostResponder(IRemoteCallable* callable) : _callable(callable) {}
-
-	bool post(std::string_view path, std::string_view, std::span<char> request, const IWriteStarter&) {
-		std::string_view editedPath = path.substr(1);
-		const IRemoteCallable* method = PathWithSeparator<"/", ResponseStringType>::findCallable(editedPath, _callable);
-		if (!method)
-			return false;
-		typename HtmlMessageEncoding<ResponseStringType>::Input input = {std::string_view(request.data(), request.size())};
-		NullStructredOutput nullOutput;
-		method->call(&input, nullOutput, {}, {});
-		return true;
-	}
-};
-
-template <BetterAssembledString StringType = std::string, HttpGetResponder<StringType> GetResponder = const DummyGetResponder,
-		HttpPostResponder<StringType> PostResponder = const DummyPostResponder, std::derived_from<GeneralisedBuffer> ExpandingBufferType = NonExpandingBuffer<2048>>
+template <BetterAssembledString StringType = std::string, std::derived_from<GeneralisedBuffer> ExpandingBufferType = ExpandingBuffer<1024>>
 class HttpServer {
 	struct Responders {
-		GetResponder* getResponder = nullptr;
-		PostResponder* postResponder = nullptr;
+		IHttpGetResponder* getResponder = nullptr;
+		IHttpPostResponder* postResponder = nullptr;
 	} _responders;
 
 public:
-	HttpServer(GetResponder* getResponder = nullptr, PostResponder* postResponder = nullptr)
+	HttpServer(IHttpGetResponder* getResponder = nullptr, IHttpPostResponder* postResponder = nullptr)
 			: _responders({getResponder, postResponder}) {}
 			
 	class Session : ITcpResponder {
@@ -824,7 +817,7 @@ public:
 	}
 };
 
-template <BetterAssembledString LocalStringType = std::string, std::derived_from<GeneralisedBuffer> ExpandingBufferType = NonExpandingBuffer<>>
+template <BetterAssembledString LocalStringType = std::string, std::derived_from<GeneralisedBuffer> ExpandingBufferType = ExpandingBuffer<>>
 class HttpClient : public IRpcResponder {
 	ITcpClient* _client = nullptr;
 	RequestToken _lastTokenWritten = {0};

@@ -4,6 +4,11 @@
 #ifndef BOMBA_CORE // Needed to run in godbolt
 #include "bomba_core.hpp"
 #endif
+
+#ifndef BOMBA_HTTP
+#include "bomba_http.hpp"
+#endif
+
 #include <unordered_map>
 #include <vector>
 #include <string>
@@ -15,7 +20,7 @@
 
 namespace Bomba {
 
-class CachingFileServer {
+class CachingFileServer : public IHttpGetResponder {
 	std::filesystem::path _root;
 
 	struct CachedFile {

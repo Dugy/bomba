@@ -326,6 +326,57 @@ public:
 	}
 };
 
+template <typename V>
+concept CharVectorType = requires(V v) {
+{ v.data() } -> std::same_as<char*>;
+{ v.size() } -> std::integral;
+v.resize(0);
+{ std::span<char>{ v.begin(), v.end() - 1 } };
+};
+
+template <int StaticSize = 1024, CharVectorType Vector = std::string>
+class ExpandingBuffer : public GeneralisedBuffer {
+	std::array<char, StaticSize> _basic;
+	Vector _extended;
+
+	bool bufferFull() override {
+		if (_extended.empty()) {
+			_extended.resize(3 * StaticSize);
+			memcpy(_extended.data(), _basic.data(), StaticSize);
+			moveBuffer({&_extended[StaticSize], 2 * StaticSize});
+		} else {
+			size_t oldSize = _extended.size();
+			_extended.resize(2 * oldSize);
+			moveBuffer({&_extended[oldSize], oldSize});
+		}
+		return true;
+	}
+
+public:
+	ExpandingBuffer() : GeneralisedBuffer({reinterpret_cast<char*>(&_basic), sizeof(_basic)}) {}
+
+	operator std::span<char>() {
+		if (_extended.empty()) {
+			return {_basic.begin(), _basic.end() - remainingSpace()};
+		} else {
+			return std::span<char>{_extended.begin(), _extended.end() - remainingSpace()};
+		}
+	}
+
+	operator std::string_view() const {
+		if (_extended.empty()) {
+			return {_basic.begin(), _basic.end() - remainingSpace()};
+		} else {
+			return {_extended.begin(), _extended.end() - remainingSpace()};
+		}
+	}
+
+	void clear() {
+		_extended.resize(0);
+		moveBuffer({_basic.data(), _basic.size()});
+	}
+};
+
 template <typename T>
 concept AssembledString = requires(T str) {
 	str	+= 'a';

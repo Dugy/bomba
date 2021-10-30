@@ -29,7 +29,7 @@ enum class JsonRpcError {
 };
 
 template <BetterAssembledString LocalStringType = std::string>
-class JsonRpcServerProtocol {
+class JsonRpcServerProtocol : public IHttpPostResponder {
 	IRemoteCallable* _callable = nullptr;
 	using Json = BasicJson<LocalStringType, GeneralisedBuffer>;
 
@@ -178,7 +178,7 @@ public:
 	JsonRpcServerProtocol(IRemoteCallable* callable) : _callable(callable) {
 	}
 
-	bool post(std::string_view, std::string_view contentType, std::span<const char> request, IWriteStarter& writeStarter) {
+	bool post(std::string_view, std::string_view contentType, std::span<char> request, IWriteStarter& writeStarter) override {
 		if (contentType != "application/json") [[unlikely]] {
 			return false;
 		}
@@ -217,14 +217,14 @@ public:
 	}
 };
 
-template <BetterAssembledString LocalStringType = std::string, HttpGetResponder<LocalStringType> GetResponder = const DummyGetResponder,
-		  std::derived_from<GeneralisedBuffer> ExpandingBufferType = NonExpandingBuffer<2048>>
+template <BetterAssembledString LocalStringType = std::string,
+		  std::derived_from<GeneralisedBuffer> ExpandingBufferType = ExpandingBuffer<>>
 class JsonRpcServer {
 	JsonRpcServerProtocol<LocalStringType> _protocol;
-	HttpServer<LocalStringType, GetResponder, decltype(_protocol), ExpandingBufferType> _http;
+	HttpServer<LocalStringType, ExpandingBufferType> _http;
 public:
 	using Session = typename decltype(_http)::Session;
-	JsonRpcServer(IRemoteCallable* callable, GetResponder* getResponder = nullptr)
+	JsonRpcServer(IRemoteCallable* callable, IHttpGetResponder* getResponder = nullptr)
 			: _protocol(callable), _http(getResponder, &_protocol) {
 	}
 	Session getSession() {
@@ -315,7 +315,7 @@ struct HttpOwner {
 } // namespace Detail
 
 
-template <BetterAssembledString StringType = std::string, std::derived_from<GeneralisedBuffer> ExpandingBufferType = NonExpandingBuffer<>>
+template <BetterAssembledString StringType = std::string, std::derived_from<GeneralisedBuffer> ExpandingBufferType = ExpandingBuffer<>>
 class JsonRpcClient : private Detail::HttpOwner<StringType, ExpandingBufferType>, public JsonRpcClientProtocol<HttpClient<StringType>> {
 	using HttpOwner = Detail::HttpOwner<StringType, ExpandingBufferType>;
 public:

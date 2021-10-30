@@ -67,7 +67,7 @@ The networking client throws an exception if the call fails so that an incorrect
 
 It was experimentally determined that an exception adds 5 - 10 microseconds the processing of a request, which is comparable to the time needed to process a request. I chose this option to optimise for successful calls and because of the atrocious verbosity of checking error codes after every function call.
 
-If there is a very strong reason not to use exceptions, it's intended to be avoidable. Exceptions are always called by functions that throw them and these functions can be replaced if some macros are set. This will not cause stack unwinding and is not debugged or tested yet.
+If there is a very strong reason not to use exceptions, it's intended to be avoidable. All internal exceptions have their own functions that throw them so that functions could be replaced if some macros are set. This will not cause stack unwinding and is not debugged or tested yet.
 
 ## Usage
 
@@ -257,13 +257,13 @@ struct Rpc : RpcObject<Rpc> {
 	}> setMessage = child<"cout_print.html">;
 };
 Bomba::CachingFileServer cachingFileServer("public_html");
-Bomba::RpcGetResponder<std::string, Bomba::CachingFileServer> getResponder(&cachingFileServer, &rpc);
+Bomba::RpcGetResponder<std::string> getResponder(&cachingFileServer, &rpc);
 Bomba::HttpServer http(&getResponder);
 Bomba::TcpServer server(&http, 8080);
 server.run();
 ```
 
-The `RpcGetResponder` class is defined in `bomba_http.hpp` and can be replaced by a custom class that modifies the returned file accordingly to the return value of the request. However, doing this would result in creating some sort of PHP duplicate, which would not be a good practice. A better feature for doing such a thing is planned.
+The `RpcGetResponder` class is defined in `bomba_http.hpp` and can be replaced by a custom class that modifies the returned file accordingly to the return value of the request. However, doing this would result in creating some sort of PHP duplicate, which would not be a good practice. The page should use RPC requests to fill the content.
 
 #### A basic JSON-RPC server
 This example shows how to make a JSON-RPC server that has two methods. It doesn't do anything beyond that.
@@ -287,16 +287,12 @@ struct MessageKeeper : Bomba::RpcObject<MessageKeeper> {
 //...
 
 MessageKeeper method;
-Bomba::JsonRpcServer<std::string> jsonRpcServer = {&method};
+Bomba::JsonRpcServer jsonRpcServer = {&method};
 Bomba::BackgroundTcpServer<decltype(jsonRpcServer)> server = {&jsonRpcServer, 8080};
 server.run();
 ```
 
-This cannot send a response larger than a 1 kiB. This restriction can be avoided using `Bomba::ExpandingBuffer` from `bomba_expanding_containers.hpp`, changing the `JsonRpcServer` declaration to:
-```C++
-Bomba::JsonRpcServer<std::string, const Bomba::DummyGetResponder, Bomba::ExpandingBuffer<>> jsonRpcServer = {&method};
-```
-It will cause it to dynamically allocate if the 1 kiB buffer is not enough (if you want a larger static buffer, set it as a template argument, i.e. `ExpandingBuffer<2048>` for a 2 kiB one).
+If the response is larger than 1 kiB, it will dynamically allocate. See [here](#changing-buffer-size) how to change this behaviour.
 
 #### A JSON-RPC server that also responds to GET requests
 The `JsonRpcServer` class also accepts all the `getResponder` classes from earlier examples:
@@ -320,7 +316,7 @@ Bomba::BackgroundTcpServer<decltype(jsonRpcServer)> server = {&jsonRpcServer, 80
 server.run();
 ```
 
-Again, you need to use `Bomba::ExpandingBuffer<>` as third template argument to `JsonRpcServer` to dynamically allocate a larger response buffers than 1 kiB. This restriction does not apply to downloaded files from `CachingFileServer`, their size is known when writing the response header and there is no need to keep the entire response in memory.
+This again will dynamically allocate if the response is larger than 1 kiB, [here](#changing-buffer-size)'s how to change it. This does not apply to downloaded files from `CachingFileServer`, their size is known when writing the response header and there is no need to keep the entire response in memory.
 
 #### A JSON-RPC server that can provide its documentation and web content
 The JSON-RPC protocol does not specify a format for describing the API, so a similar protocol's documentation can be generated to describe the API in good detail.
@@ -332,7 +328,6 @@ The JSON-RPC protocol does not specify a format for describing the API, so a sim
 #include "bomba_json_rpc.hpp"
 #include "bomba_caching_file_server.hpp"
 #include "bomba_json_wsp_description.hpp"
-#include "bomba_expanding_containers.hpp"
 
 struct RpcClass : Bomba::RpcObject<RpcClass> {
 	std::string message;
@@ -352,7 +347,7 @@ int main(int argc, char** argv) {
 
 	Bomba::CachingFileServer cachingFileServer("public_html");
 	cachingFileServer.addGeneratedFile("api_description.json", description);
-	Bomba::JsonRpcServer<std::string, Bomba::CachingFileServer, Bomba::ExpandingBuffer<>> jsonRpc(&method, &cachingFileServer);
+	Bomba::JsonRpcServer<std::string> jsonRpc(&method, &cachingFileServer);
 	Bomba::TcpServer server(&jsonRpc, 8080);
 	server.run();
 }
@@ -366,11 +361,10 @@ This will download and print the index page of anything served at `0.0.0.0:8080`
 ```C++
 #include "bomba_sync_client.hpp"
 #include "bomba_http.hpp"
-#include "bomba_expanding_containers.hpp"
 //...
 
 Bomba::SyncNetworkClient client("0.0.0.0", "8080");
-Bomba::HttpClient<std::string, Bomba::ExpandingBuffer<>> http(&client, "0.0.0.0");
+Bomba::HttpClient http(&client, "0.0.0.0");
 auto identifier = http.get("/");
 // Can do other stuff here, like send more requests
 http.getResponse(identifier, [](std::span<char> response) {
@@ -395,7 +389,7 @@ Bomba::RpcLambda<[] (std::string newMessage = Bomba::name("sent"),
 }> method;
 
 Bomba::SyncNetworkClient client("0.0.0.0", "8080");
-Bomba::HttpClient<> http(&client, "0.0.0.0");
+Bomba::HttpClient http(&client, "0.0.0.0");
 method.setResponder(&http);
 method("A verÿ lông messäge.", 2, true);
 ```
@@ -407,7 +401,8 @@ auto future = method.async("Hearken ye", 1, false);
 if (future.is_ready())
 	future.get();
 ```
-Note: Unlike the previous example, this one doesn't use `ExpandingBuffer`, so it will not allow requests larger than 1 kiB. Easy to change.
+
+Note: This again will dynamically allocate if the response is larger than 1 kiB, [here](#changing-buffer-size)'s how to change it.
 
 #### JSON-RPC client
 This is the client counterpart for the [JSON-RPC server example](#a-basic-json-rpc-server):
@@ -469,8 +464,26 @@ A GUI that works out of the box is provided by the `index.html` file in the `pub
 
 The GUI can be accessed by connecting to the program's port via browser.
 
-### Custom string type
+### Changing some other behaviour
+Although the library uses a lot of dependency injection allowing to replace components by different ones, it needs to create some types, so they are supplied as template arguments.
+
+#### Custom string type
 If you can't use `std::string` for some reasons (like restrictions regarding dynamic allocation), you can define your own string type (assuming it's called `String`) and serialise JSON as `Bomba::BasicJson<String>`. I recommend aliasing that type with `using`.
 
 Your string type has to be convertible to `std::string_view`, needs to have a `clear()` method and needs to have the `+=` operator overloaded for `char` and `const char*`, similarly to `std::string`. Other traits are not needed.
 
+#### Changing buffer size
+RPC responses have a 1 kiB buffer by default, if a larger one is needed, it will be dynamically allocated. There is always a template argument that allows changing it.
+
+Typically, you will want:
+* `ExpandingBuffer<2048>` - 2 kiB size (uses `std::string` as buffer if larger)
+* `ExpandingBuffer<2048, std::vector<char>>` - 2 kiB size, uses `std::vector` as underlying storage (you might want to put something with a custom allocator there)
+* `NonExpandingBuffer<2048>` - 2 kiB size, larger responses will be truncated (default size is 1024)
+
+To make `HttpServer` use it, declare it as:
+```C++
+Bomba::HttpServer<std::string, Bomba::NonExpandingBuffer<2048>> jsonRpcServer = {&method};
+```
+Small buffers for unescaping strings will use `std::string` (which is default). The `JsonRpcServer` class will create its own `HttpServer` with the same template arguments as the ones it has (i.e. `JsonRpcServer<std::string, NonExpandingBuffer<2048>>`).
+
+This does not affect cases where a resource with already known size is downloaded, because it doesn't need to keep the header in memory.
