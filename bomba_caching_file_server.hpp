@@ -108,8 +108,9 @@ public:
 		auto found = _cache.find(std::string(path));
 		if (found == _cache.end()) [[unlikely]]
 				return false;
-		auto& output = outputProvider.writeKnownSize(found->second.type, found->second.contents.size());
-		output += std::string_view(found->second.contents.data(), found->second.contents.size());
+		outputProvider.writeKnownSize(found->second.type, found->second.contents.size(), [&] (GeneralisedBuffer& output) {
+			output += std::string_view(found->second.contents.data(), found->second.contents.size());
+		});
 		return true;
 	}
 	void reload() {

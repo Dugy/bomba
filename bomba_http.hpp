@@ -26,7 +26,7 @@ struct HttpParseState {
 
 		if (position == 0) { // Header not read yet
 			while (position < int(input.size())) {
-				if (input[position] == '\r') {
+				if (input[position] == '\r') [[unlikely]] {
 					position++;
 					if (position >= int(input.size()))
 						break;
@@ -60,7 +60,7 @@ struct HttpParseState {
 
 			// Skip initial whitespace
 			while (position < int(input.size())) {
-				if (input[position] != ' ' && input[position] != '\t') {
+				if (input[position] != ' ' && input[position] != '\t') [[likely]] {
 					attributeNameStart = position;
 					break;
 				}
@@ -497,8 +497,9 @@ struct SimpleGetResponder : IHttpGetResponder {
 	std::string_view resource;
 	std::string_view resourceType = "text/html";
 	bool get(std::string_view, IWriteStarter& writeResponse) override {
-		auto& response = writeResponse.writeKnownSize(std::string_view(resourceType), resource.size());
-		response += resource;
+		writeResponse.writeKnownSize(std::string_view(resourceType), resource.size(), [&] (GeneralisedBuffer& response) {
+			response += resource;
+		});
 		return true;
 	}
 };
@@ -546,9 +547,10 @@ struct DownloadIfFilePresent : IHttpDispatcher {
 				NullStructredOutput nullResponse;
 				method->call(args, nullResponse, {}, {});
 			} else {
-				GeneralisedBuffer& output = outputProvider.writeUnknownSize(name);
-				typename OutputFormat::Output response(output);
-				method->call(args, response, {}, {});
+				outputProvider.writeUnknownSize(name, [&] (GeneralisedBuffer& output) {
+					typename OutputFormat::Output response(output);
+					method->call(args, response, {}, {});
+				});
 			}
 			return true;
 		} else return fileFound;
@@ -588,7 +590,7 @@ public:
 	}
 };
 
-template <BetterAssembledString StringType = std::string, std::derived_from<GeneralisedBuffer> ExpandingBufferType = ExpandingBuffer<1024>>
+template <std::derived_from<GeneralisedBuffer> ExpandingBufferType = ExpandingBuffer<1024>>
 class HttpServer {
 	struct Responders {
 		IHttpGetResponder* getResponder = nullptr;
@@ -683,7 +685,6 @@ public:
 				bool success = false;
 				constexpr static char correctIntro[] = "HTTP/1.1 200 OK\r\nContent-Length:";
 				constexpr static char unsetSize[] = " 0         ";
-				StringType response;
 
 				constexpr int StaticSize = 1024;
 				struct StreamingBufferType : StreamingBuffer<StaticSize> {
@@ -699,19 +700,8 @@ public:
 					bool startedResponse = false;
 					int headerSize = 0;
 
-					std::aligned_storage_t<std::max(sizeof(StreamingBufferType), sizeof(ExpandingBufferType)),
-							std::max(alignof(StreamingBufferType), alignof(ExpandingBufferType))> space = {};
-					StreamingBufferType* streamingBuffer = nullptr;
-					ExpandingBufferType* expandingBuffer = nullptr;
-
 
 					WriteStarter(decltype(writer) writer) : writer(writer) {}
-					~WriteStarter() {
-						if (streamingBuffer)
-							streamingBuffer->~GeneralisedBuffer();
-						else if (expandingBuffer)
-							expandingBuffer->~GeneralisedBuffer();
-					}
 
 					void startCorrectResponse(GeneralisedBuffer& target, std::string_view contentType, std::optional<int> size = std::nullopt) {
 						startedResponse = true;
@@ -730,27 +720,21 @@ public:
 						headerSize = target.size();
 					}
 
-					void finalise() {
-						if (expandingBuffer) {
-							std::string_view view = *expandingBuffer;
-							std::to_chars(const_cast<char*>(&view[sizeof(correctIntro)]),
-									const_cast<char*>(&view[sizeof(correctIntro) + sizeof(unsetSize)]),
-									view.size() - headerSize);
-							writer(view);
-						} else if (streamingBuffer) {
-							streamingBuffer->flush();
-						}
+					void writeUnknownSize(std::string_view resourceType, Callback<void(GeneralisedBuffer&)> filler) override {
+						ExpandingBufferType expandingBuffer;
+						startCorrectResponse(expandingBuffer, resourceType);
+						filler(expandingBuffer);
+						std::string_view view = expandingBuffer;
+						std::to_chars(const_cast<char*>(&view[sizeof(correctIntro)]),
+								const_cast<char*>(&view[sizeof(correctIntro) + sizeof(unsetSize)]),
+								view.size() - headerSize);
+						writer(view);
 					}
-
-					GeneralisedBuffer& writeUnknownSize(std::string_view resourceType) override {
-						expandingBuffer = new (&space) ExpandingBufferType();
-						startCorrectResponse(*expandingBuffer, resourceType);
-						return *expandingBuffer;
-					}
-					GeneralisedBuffer& writeKnownSize(std::string_view resourceType, int64_t size) override {
-						streamingBuffer = new (&space) StreamingBufferType{writer};
-						startCorrectResponse(*streamingBuffer, resourceType, size);
-						return *streamingBuffer;
+					void writeKnownSize(std::string_view resourceType, int64_t size, Callback<void(GeneralisedBuffer&)> filler) override {
+						StreamingBufferType streamingBuffer{writer};
+						startCorrectResponse(streamingBuffer, resourceType, size);
+						filler(streamingBuffer);
+						streamingBuffer.flush();
 					}
 				};
 
@@ -787,7 +771,6 @@ public:
 				}
 				if (success) {
 					if (correctResponseWriter.startedResponse) {
-						correctResponseWriter.finalise();
 						restore();
 					} else {
 						constexpr std::string_view noResponse = "HTTP/1.1 204 No Content\r\n\r\n";

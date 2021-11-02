@@ -3,7 +3,7 @@ C++20 library for convenient implementation of remote procedure calls and serial
 
 To maximise convenience, it needs no code generation and no macros and is entirely header-only, yet its verbosity is at minimum. It is also usable without any additional libraries.
 
-It's written in bleeding edge C\++20. Works on GCC 12, Clang 13 or MSVC 19. Before C\++23 reflection (`reflexpr` expression) is available, a GCC-only trick relying on Defect Report 2118 is used. Clang and MSVC have to use a different implementation with slightly worse performance. It's intended to be embedded-friendly as it can be used without any dynamic allocation when compiled by GCC and no dynamic allocation after initialisation if compiled with Clang or MSVC. Currently the only available implementation of the networking layer is based on `std::experimental::networking` and uses some dynamic allocation, so that part (about 130 lines) might need reimplementation if used outside PC architectures.
+It's written in bleeding edge C\++20. Works on GCC 10, Clang 13 or MSVC 19. Before C\++23 reflection (`reflexpr` expression) is available, a GCC-only trick relying on Defect Report 2118 is used. Clang and MSVC have to use a different implementation with slightly worse performance. It's intended to be embedded-friendly as it can be used without any dynamic allocation when compiled by GCC and no dynamic allocation after initialisation if compiled with Clang or MSVC. Currently the only available implementation of the networking layer is based on `std::experimental::networking` and uses some dynamic allocation, so that part (about 130 lines) might need reimplementation if used outside PC architectures.
 
 ## Showcase
 After setting up the components (examples are below), this is all the code needed to define an API call that allows remotely calling a lambda:
@@ -482,8 +482,8 @@ Typically, you will want:
 
 To make `HttpServer` use it, declare it as:
 ```C++
-Bomba::HttpServer<std::string, Bomba::NonExpandingBuffer<2048>> jsonRpcServer = {&method};
+Bomba::HttpServer<Bomba::NonExpandingBuffer<2048>> jsonRpcServer = {&method};
 ```
-Small buffers for unescaping strings will use `std::string` (which is default). The `JsonRpcServer` class will create its own `HttpServer` with the same template arguments as the ones it has (i.e. `JsonRpcServer<std::string, NonExpandingBuffer<2048>>`).
+The `JsonRpcServer` class will create its own `HttpServer` with the buffer type determined by the value of its second template argument (i.e. `JsonRpcServer<std::string, NonExpandingBuffer<2048>>`).
 
 This does not affect cases where a resource with already known size is downloaded, because it doesn't need to keep the header in memory.

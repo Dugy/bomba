@@ -658,11 +658,11 @@ int main(int argc, char** argv) {
 			
 	struct DummyWriteStarter : Bomba::IWriteStarter {
 		Bomba::ExpandingBuffer<1024> buffer;
-		GeneralisedBuffer& writeUnknownSize(std::string_view resourceType) override {
-			return buffer;
+		void writeUnknownSize(std::string_view, Callback<void(GeneralisedBuffer&)> filler) override {
+			filler(buffer);
 		}
-		GeneralisedBuffer& writeKnownSize(std::string_view resourceType, int64_t size) override {
-			return buffer;
+		void writeKnownSize(std::string_view, int64_t, Callback<void(GeneralisedBuffer&)> filler) override {
+			filler(buffer);
 		}
 	};
 	
@@ -861,7 +861,7 @@ R"~(<!doctype html>
 		Bomba::SimpleGetResponder getResponder;
 		getResponder.resource = someHtml;
 		Bomba::DummyPostResponder postResponder;
-		Bomba::HttpServer<std::string> http = {&getResponder, &postResponder};
+		Bomba::HttpServer http = {&getResponder, &postResponder};
 		FakeServer server = {&http};
 		auto [response, reaction] = server.respond(expectedGet);
 		doATest(int(reaction), int(ServerReaction::OK));
@@ -947,7 +947,7 @@ R"~(<!doctype html>
 			InlineMethod methodServer;
 			Bomba::RpcGetResponder<std::string> betterGetResponder = {&getResponder, &methodServer};
 			Bomba::HtmlPostResponder<> postResponder = {&methodServer};
-			Bomba::HttpServer<std::string> httpServer = {&betterGetResponder, &postResponder};
+			Bomba::HttpServer<> httpServer = {&betterGetResponder, &postResponder};
 			Bomba::BackgroundTcpServer<decltype(httpServer)> server = {&httpServer, 8901}; // Very unlikely this port will be used for something
 
 			InlineMethod methodClient;

@@ -183,37 +183,39 @@ public:
 			return false;
 		}
 
-		GeneralisedBuffer& response = writeStarter.writeUnknownSize("application/json");
-		constexpr auto noFlags = Json::Output::Flags::NONE;
-				
-		typename Json::Input input(std::string_view(request.data(), request.size()));
-		typename Json::Output output(response);
+		bool result = false;
+		writeStarter.writeUnknownSize("application/json", [&] (GeneralisedBuffer& response) {
+			constexpr auto noFlags = Json::Output::Flags::NONE;
 
-		auto inputType = input.identifyType(noFlags);
-		if (inputType == IStructuredInput::TYPE_ARRAY) {
-			// Handle an array of requests
-			input.startReadingArray(noFlags);
-			output.startWritingArray(noFlags, IStructuredOutput::UNKNOWN_SIZE);
-			int resultArrayIndex = 0;
-			while (input.nextArrayElement(noFlags)) {
-				auto previousPosition = input.storePosition(noFlags);
-				bool success = respondInternal(input, output, [&] () mutable {
-					output.introduceArrayElement(noFlags, resultArrayIndex);
-					resultArrayIndex++;
-				});
-				if (!success) {
-					input.restorePosition(noFlags, previousPosition);
-					input.skipObjectElement(noFlags);
+			typename Json::Input input(std::string_view(request.data(), request.size()));
+			typename Json::Output output(response);
+
+			auto inputType = input.identifyType(noFlags);
+			if (inputType == IStructuredInput::TYPE_ARRAY) {
+				// Handle an array of requests
+				input.startReadingArray(noFlags);
+				output.startWritingArray(noFlags, IStructuredOutput::UNKNOWN_SIZE);
+				int resultArrayIndex = 0;
+				while (input.nextArrayElement(noFlags)) {
+					auto previousPosition = input.storePosition(noFlags);
+					bool success = respondInternal(input, output, [&] () mutable {
+						output.introduceArrayElement(noFlags, resultArrayIndex);
+						resultArrayIndex++;
+					});
+					if (!success) {
+						input.restorePosition(noFlags, previousPosition);
+						input.skipObjectElement(noFlags);
+					}
 				}
+				input.endReadingArray(noFlags);
+				output.endWritingArray(noFlags);
+				result = true; // Http should not report an error here
+			} else if (inputType == IStructuredInput::TYPE_OBJECT) {
+				respondInternal(input, output, {});
+				result = true;
 			}
-			input.endReadingArray(noFlags);
-			output.endWritingArray(noFlags);
-			return true; // Http should not report an error here
-		} else if (inputType == IStructuredInput::TYPE_OBJECT) {
-			respondInternal(input, output, {});
-			return true;
-		}
-		return false; // The request was total nonsense
+		});
+		return result; // The request was total nonsense
 	}
 };
 
@@ -221,7 +223,7 @@ template <BetterAssembledString LocalStringType = std::string,
 		  std::derived_from<GeneralisedBuffer> ExpandingBufferType = ExpandingBuffer<>>
 class JsonRpcServer {
 	JsonRpcServerProtocol<LocalStringType> _protocol;
-	HttpServer<LocalStringType, ExpandingBufferType> _http;
+	HttpServer<ExpandingBufferType> _http;
 public:
 	using Session = typename decltype(_http)::Session;
 	JsonRpcServer(IRemoteCallable* callable, IHttpGetResponder* getResponder = nullptr)

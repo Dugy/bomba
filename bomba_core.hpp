@@ -468,8 +468,8 @@ struct IRemoteCallableDescriptionFiller {
 };
 
 struct IWriteStarter {
-	virtual GeneralisedBuffer& writeUnknownSize(std::string_view resourceType) = 0;
-	virtual GeneralisedBuffer& writeKnownSize(std::string_view resourceType, int64_t size) = 0;
+	virtual void writeUnknownSize(std::string_view resourceType, Callback<void(GeneralisedBuffer&)> filler) = 0;
+	virtual void writeKnownSize(std::string_view resourceType, int64_t size, Callback<void(GeneralisedBuffer&)> filler) = 0;
 };
 
 class IRemoteCallable;
