@@ -8,7 +8,6 @@
 #include "bomba_json_rpc.hpp"
 #include "bomba_caching_file_server.hpp"
 #include "bomba_json_wsp_description.hpp"
-#include "bomba_expanding_containers.hpp"
 
 struct RpcMessage : Bomba::Serialisable<RpcMessage> {
 	std::string message = key<"message">;

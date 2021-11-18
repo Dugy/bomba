@@ -27,6 +27,11 @@ struct HttpParseState {
 		if (position == 0) { // Header not read yet
 			while (position < int(input.size())) {
 				if (input[position] == '\r') [[unlikely]] {
+
+					if (!firstLineReader({input.data(), size_t(position)})) {
+						return {ServerReaction::DISCONNECT, 0};
+					}
+
 					position++;
 					if (position >= int(input.size()))
 						break;
@@ -41,10 +46,6 @@ struct HttpParseState {
 				return {ServerReaction::READ_ON, position - 1};
 			}
 			position++;
-
-			if (!firstLineReader({input.data(), size_t(position)})) {
-				return {ServerReaction::DISCONNECT, 0};
-			}
 			parsePosition = position;
 		}
 
@@ -634,10 +635,7 @@ public:
 					separator2++;
 				path = std::pair<int, int>(separator1, separator2 - separator1);
 				separator2++;
-				int separator3 = separator2;
-				while (firstLine[separator3] != '\r' && separator3 < int(firstLine.size()))
-					separator3++;
-				std::string_view protocol = firstLine.substr(separator2, separator3 - separator2);
+				std::string_view protocol = firstLine.substr(separator2, firstLine.size() - separator2);
 				if (protocol != "HTTP/1.1" && protocol != "HTTP/1.0")
 					requestType = WEIRD_REQUEST;
 				return true;

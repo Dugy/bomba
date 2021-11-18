@@ -159,6 +159,40 @@ std::string message = future2.get();
 future1.get();
 ```
 
+
+#### Objects composed at runtime
+If the structure is more complex, it may be inconvenient to declare as one huge class. Because of this, there is an `RpcLambdaHolder` class that wraps around implementations of the `IRemoteCallable` interface. This allows using lambdas that have closures, composing the remote interface from program components and many other conveniences, at the cost of minor overhead.
+
+The code needed to wrap a class:
+```C++
+RpcLambdaHolder sendMessage = [&] (std::string message = name("message"), std::string author = name("author")) {
+	messages.push_back(message, author);
+};
+```
+
+It takes moves the lambda and takes its ownership. If the lambda is larger than three words, the copy will be dynamically allocated (this is supposed to be done only on startup, so it should be fine for devices with little memory). The object can be accessed using `operator->()`.
+
+The code to create an object with multiple methods like this:
+```C++
+DynamicRpcObject object;
+object.add("send_message", std::move(sendMessage));
+object.add("read_message", std::move(readMessage));
+```
+This will dynamically allocate. `DynamicRpcObjects` implements the `IRemoteCallable` interface. It can be stored in the `RpcLambdaHolder` class as well.
+
+In order to call the function from your program, the type must be known. It is enabled by the `TypedRpcLambdaHolder` class that is used similarly to `std::function`, but inherits from `RpcLambdaHolder` and has its functionality:
+```C++
+TypedRpcLambdaHolder<void(std::string)> sendMessage = [&] (std::string message = name("message")) {
+	messages.push(message);
+};
+```
+
+
+There is a static helper function for creating a non-owning `RpcLambdaHolder` to allow putting typed functions into a `DynamicRpcObject` without losing the ability to call them:
+```C++
+RpcLambdaHolder borrowed = RpcLambdaHolder::nonOwning(*sendMessage);
+```
+
 ### Servers
 There are multiple ways to implement web servers, depending on the intended functionality
 

@@ -10,7 +10,7 @@
 #include "bomba_tcp_server.hpp"
 #include "bomba_sync_client.hpp"
 #include "bomba_json_wsp_description.hpp"
-#include "bomba_expanding_containers.hpp"
+#include "bomba_dynamic_object.hpp"
 #include <string>
 #include <map>
 #include <memory>
@@ -885,7 +885,7 @@ R"~(<!doctype html>
 				"HTTP/1.1 204 No Content\r\n\r\n";
 
 	static std::string rpcTestAssigned = "";
-	using InlineMethod = Bomba::RpcLambda<[] (std::string newValue = Bomba::name("assigned")) {
+	using InlineMethod = Bomba::RpcStatelessLambda<[] (std::string newValue = Bomba::name("assigned")) {
 		rpcTestAssigned = newValue;
 	}>;
 
@@ -1342,6 +1342,105 @@ R"~({
 		std::string description = describeInJsonWsp<std::string>(rpc, "readytofacespamfromcults.com", "Store Messages with Author Names");
 		doATest(description, expectedComplexRpcDescription);
 	}
+
+	{
+		std::cout << "Testing dynamic functions" << std::endl;
+		int incrementee = 0;
+		auto incrementer = [&incrementee] () {
+			incrementee++;
+		};
+		RpcLambdaHolder holder(incrementer);
+		doATest(holder.isLocal(), true);
+
+		std::string_view emptyJson = "{}";
+		JSON::Input input(emptyJson);
+		Bomba::ExpandingBuffer outputBuffer;
+		JSON::Output output(outputBuffer);
+		holder->call(&input, output, [] {}, [] (std::string_view) {});
+		doATest(incrementee, 1);
+
+		RpcLambdaHolder movedHolder = std::move(holder);
+		JSON::Input input2(emptyJson);
+		movedHolder->call(&input2, output, [] {}, [] (std::string_view) {});
+		doATest(incrementee, 2);
+
+		int incrementee2 = 0;
+		int incrementee3 = 0;
+		RpcLambdaHolder holder2([&] { incrementee++; incrementee2++; incrementee3++; });
+		JSON::Input input3(emptyJson);
+		holder2->call(&input3, output, [] {}, [] (std::string_view) {});
+		doATest(incrementee2, 1);
+
+		RpcLambdaHolder movedHolder2 = std::move(holder2);
+		JSON::Input input4(emptyJson);
+		movedHolder2->call(&input4, output, [] {}, [] (std::string_view) {});
+		doATest(incrementee3, 2);
+	}
+
+	constexpr std::string_view alternateAdvancedRequest2Response =
+R"~({
+	"jsonrpc" : "2.0",
+	"id" : 1,
+	"result" : {
+		"message" : "Reptilians!!!",
+		"author" : "Who knows"
+	}
+})~";
+
+	constexpr std::string_view alternateAdvancedRequest2Response2 =
+R"~({
+	"jsonrpc" : "2.0",
+	"id" : 2,
+	"result" : {
+		"message" : "Reptilians!!!",
+		"author" : "Who knows"
+	}
+})~";
+
+	{
+		std::cout << "Testing dynamic object" << std::endl;
+
+		DynamicRpcObject object;
+		ComplexRpcMessage closure;
+		closure.author = "Who knows";
+		closure.message = "Reptilians!!!";
+		RpcLambdaHolder getMessage = [&closure] () {
+			return closure;
+		};
+		RpcLambdaHolder setMessage = [&closure] (const std::string& message = name("message"), const std::string& author = name("author")) {
+			closure.message = message;
+			closure.author = author;
+		};
+		object.add("get_message", std::move(getMessage));
+		object.add("set_message", std::move(setMessage));
+		std::string description = describeInJsonWsp<std::string>(object, "readytofacespamfromcults.com", "Store Messages with Author Names");
+		doATest(description, expectedComplexRpcDescription);
+
+		DummyWriteStarter writeStarter;
+		auto viewToSpan = [] (std::string_view str) { return std::span<char>(const_cast<char*>(str.data()), str.size()); };
+		Bomba::JsonRpcServerProtocol protocol = &object;
+		protocol.post("", "application/json", viewToSpan(advancedRpcRequest2), writeStarter);
+		doATest(std::string_view(writeStarter.buffer), alternateAdvancedRequest2Response);
+
+		TypedRpcLambdaHolder<ComplexRpcMessage()> getMessage2 = [&closure] () {
+			return closure;
+		};
+		RpcLambdaHolder setMessage2 = [&closure] (const std::string& message = name("message"), const std::string& author = name("author")) {
+			closure.message = message;
+			closure.author = author;
+		};
+		DynamicRpcObject backupObject;
+		backupObject.add("get_message", RpcLambdaHolder::nonOwning(*getMessage2));
+		backupObject.add("set_message", RpcLambdaHolder::nonOwning(*setMessage2));
+		backupObject.add("backup", RpcLambdaHolder::nonOwning(object));
+
+		DummyWriteStarter writeStarter2;
+		Bomba::JsonRpcServerProtocol protocol2 = &backupObject;
+		protocol2.post("", "application/json", viewToSpan(dummyRpcRequest4), writeStarter2);
+		doATest(std::string_view(writeStarter2.buffer), alternateAdvancedRequest2Response2);
+	}
+
+
 
 	std::cout << "Passed: " << (tests - errors) << " / " << tests << ", errors: " << errors << std::endl;
 

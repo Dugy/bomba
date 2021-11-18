@@ -1,3 +1,6 @@
+#ifndef BOMBA_OBJECT
+#define BOMBA_OBJECT
+
 #ifndef BOMBA_CORE // Needed to run in godbolt
 #include "bomba_core.hpp"
 #endif
@@ -472,3 +475,5 @@ public:
 
 } // namespace Bomba
 #undef NO_DEFECT_REPORT_2118
+
+#endif // BOMBA_OBJECT

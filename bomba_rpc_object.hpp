@@ -1,3 +1,6 @@
+#ifndef BOMBA_RPC_OBJECT
+#define BOMBA_RPC_OBJECT
+
 #ifndef BOMBA_CORE // Needed to run in godbolt
 #include "bomba_core.hpp"
 #endif
@@ -294,11 +297,24 @@ public:
 };
 
 namespace Detail {
-	template <auto Lambda, SerialisationFlags::Flags Flags, typename LambdaType, typename Returned, typename FirstArg, typename... Args>
+
+struct RpcLambdaInformationHolder {
+	void (*unnamedChildAdder)(std::string_view name, IRemoteCallableDescriptionFiller& filler) = nullptr;
+	SubtypesAddingFunction subtypesAdder = nullptr;
+
+	constexpr RpcLambdaInformationHolder(decltype(unnamedChildAdder) unnamedChildAdder, SubtypesAddingFunction subtypesAdder)
+		: unnamedChildAdder(unnamedChildAdder)
+		, subtypesAdder(subtypesAdder)
+	{}
+};
+
+	template <typename LambdaType, SerialisationFlags::Flags Flags, typename Returned, typename FirstArg, typename... Args>
 	class RpcLambdaParent : public IRemoteCallable, public IResponseReader<Returned> {
 	protected:
-		using ArgsTuple = typename ArgsTupleProvider<FirstArg, Args...>::type;
+		using ArgsTuple = typename ArgsTupleProvider<std::decay_t<FirstArg>, std::decay_t<Args>...>::type;
 		constexpr static int argsSize = std::tuple_size<ArgsTuple>::value;
+
+		[[no_unique_address]] LambdaType lambda;
 
 		static constexpr bool usesParent() {
 			if constexpr(std::is_pointer_v<FirstArg>) {
@@ -311,7 +327,7 @@ namespace Detail {
 		constexpr static inline int argumentInfoSize = usesParent() ? argsSize - 1 : argsSize;
 
 		template <typename Tuple, size_t... indexes>
-		static void callWithAPartOfArgs(std::index_sequence<indexes...>, const Tuple& args) {
+		void callWithAPartOfArgs(std::index_sequence<indexes...>, const Tuple& args) const {
 			if constexpr(std::tuple_size<Tuple>::value + 1 < argumentInfoSize) {
 				callWithAPartOfArgs(std::make_index_sequence<std::tuple_size<Tuple>::value + 1>(),
 						std::tuple_cat(args, std::tuple<Detail::Omniconverter>{}));
@@ -321,9 +337,13 @@ namespace Detail {
 			setupData->argumentBeingFilled = setupData->argumentBeingSet;
 			if (!setjmp(setupData->jumpBuffer)) {
 				if constexpr(usesParent()) {
-					Lambda(nullptr, std::get<indexes>(args)...); // Problems here imply some arguments were not named
+					static_assert(std::is_invocable_v<decltype(lambda), std::nullptr_t, decltype(std::get<indexes>(args))...>,
+							"RPC lambda seems to be missing descriptors set as default arguments");
+					lambda(nullptr, std::get<indexes>(args)...); // Problems here imply some arguments were not named
 				} else {
-					Lambda(std::get<indexes>(args)...);
+					static_assert(std::is_invocable_v<decltype(lambda), decltype(std::get<indexes>(args))...>,
+							"RPC lambda seems to be missing descriptors set as default arguments");
+					lambda(std::get<indexes>(args)...);
 				}
 				// The last default-valued argument will cause a long jump, return to the condition,
 				// evaluate as false and continue to the following line
@@ -345,7 +365,8 @@ namespace Detail {
 			setup.argsSize = argumentInfoSize;
 			Detail::RpcSetupData::instance = &setup;
 			if constexpr(argumentInfoSize > 0) {
-				callWithAPartOfArgs(std::make_index_sequence<0>(), std::tuple<>{});
+				// This will NOT call the actual lambda this time
+				reinterpret_cast<RpcLambdaParent*>(1)->callWithAPartOfArgs(std::make_index_sequence<0>(), std::tuple<>{});
 			}
 			Detail::RpcSetupData::instance = nullptr;
 			return result;
@@ -367,38 +388,13 @@ namespace Detail {
 		}
 
 		template <size_t... indexes>
-		static void callInternal(std::index_sequence<indexes...>, Returned* retval, ArgsTuple& args) {
+		void callInternal(std::index_sequence<indexes...>, Returned* retval, ArgsTuple& args) const {
 			if constexpr(std::is_same_v<Returned, void>) {
-				Lambda(std::get<indexes>(args)...);
+				lambda(std::get<indexes>(args)...);
 			} else {
-				*retval = Lambda(std::get<indexes>(args)...);
+				*retval = lambda(std::get<indexes>(args)...);
 			}
 		}
-
-		constexpr static Detail::SubtypesAddingFunction subtypesAdder = [] (ISerialisableDescriptionFiller& filler) {
-			for (int i = 0; i < argumentInfoSize; i++) {
-				argumentInfo[i].subtypesAdder(filler);
-			}
-			if constexpr(!std::is_void_v<Returned>) {
-				TypedSerialiser<Returned>::listTypes(filler);
-			}
-		};
-
-		template <StringLiteral Name>
-		constexpr static Detail::ChildDescribingFunction childAdder = [] (IRemoteCallableDescriptionFiller& filler) {
-			filler.addMethod(Name, "", [] (IPropertyDescriptionFiller& paramFiller) {
-				for (int i = 0; i < argumentInfoSize; i++) {
-					argumentInfo[i].argumentAdder(paramFiller, argumentInfo[i].name);
-				}
-			}, [] (IPropertyDescriptionFiller& returnFiller) {
-				if constexpr(!std::is_void_v<Returned>) {
-					returnFiller.addMember("result", "", [&] {
-						TypedSerialiser<Returned>::describeType(returnFiller);
-					});
-				}
-			});
-		};
-
 		bool call(IStructuredInput* arguments, IStructuredOutput& result, Callback<> introduceResult,
 				Callback<void(std::string_view)>, std::optional<UserId>) const final override {
 			ArgsTuple input;
@@ -479,87 +475,120 @@ namespace Detail {
 		template <typename... AnyArgs>
 		Future<Returned> immediateCallToFuture(AnyArgs&&... args) const {
 			if constexpr(std::is_void_v<Returned>) {
-				Lambda(std::forward<AnyArgs>(args)...);
+				lambda(std::forward<AnyArgs>(args)...);
 				return {};
 			} else {
-				return Future<Returned>(Lambda(std::forward<AnyArgs>(args)...));
+				return Future<Returned>(lambda(std::forward<AnyArgs>(args)...));
 			}
 		}
 
 	public:
-		Returned operator()(Args... args) const requires(usesParent()) {
-			IRpcResponder* responder = getResponder();
-			if (responder) {
-				return readResponse(responder, sendRequest(responder, std::forward<Args>(args)...));
-			} else {
-				return Lambda(static_cast<FirstArg>(parent()), std::forward<Args>(args)...);
-			}
-		}
-		Returned operator()(FirstArg first, Args... args) const
-				requires(!usesParent() && !std::is_same_v<void, FirstArg>) {
-			IRpcResponder* responder = getResponder();
-			if (responder) {
-				return readResponse(responder, sendRequest(responder, std::forward<FirstArg>(first), std::forward<Args>(args)...));
-			} else {
-				return Lambda(std::forward<FirstArg>(first), std::forward<Args>(args)...);
-			}
-		}
-		Returned operator()() const requires(std::is_same_v<void, FirstArg>) {
-			IRpcResponder* responder = getResponder();
-			if (responder) {
-				return readResponse(responder, sendRequest(responder));
-			} else {
-				return Lambda();
-			}
-		}
+		RpcLambdaParent(const LambdaType& lambda) : lambda(lambda) {}
 
-		Future<Returned> async(Args... args) const requires(usesParent()) {
-			IRpcResponder* responder = getResponder();
-			if (responder) {
-				RequestToken token = sendRequest(responder, std::forward<Args>(args)...);
-				return Future<Returned>(this, responder, token);
-			} else {
-				return immediateCallToFuture(static_cast<FirstArg>(parent()), std::forward<Args>(args)...);
+		constexpr static RpcLambdaInformationHolder info = RpcLambdaInformationHolder(
+					[] (std::string_view name, IRemoteCallableDescriptionFiller& filler) {
+			filler.addMethod(name, "", [] (IPropertyDescriptionFiller& paramFiller) {
+				for (int i = 0; i < argumentInfoSize; i++) {
+					argumentInfo[i].argumentAdder(paramFiller, argumentInfo[i].name);
+				}
+			}, [] (IPropertyDescriptionFiller& returnFiller) {
+				if constexpr(!std::is_void_v<Returned>) {
+					returnFiller.addMember("result", "", [&] {
+						TypedSerialiser<Returned>::describeType(returnFiller);
+					});
+				}
+			});
+		}, [] (ISerialisableDescriptionFiller& filler) {
+			for (int i = 0; i < argumentInfoSize; i++) {
+				argumentInfo[i].subtypesAdder(filler);
 			}
-		}
-		Future<Returned> async(FirstArg first, Args... args) const
-				requires(!usesParent() && !std::is_same_v<void, FirstArg>) {
-			IRpcResponder* responder = getResponder();
-			if (responder) {
-				RequestToken token = sendRequest(responder, std::forward<FirstArg>(first), std::forward<Args>(args)...);
-				return Future<Returned>(this, responder, token);
-			} else {
-				return immediateCallToFuture(std::forward<FirstArg>(first), std::forward<Args>(args)...);
+			if constexpr(!std::is_void_v<Returned>) {
+				TypedSerialiser<Returned>::listTypes(filler);
 			}
-		}
-		Future<Returned> async() const requires(std::is_same_v<void, FirstArg>) {
-			IRpcResponder* responder = getResponder();
-			if (responder) {
-				RequestToken token = sendRequest(responder);
-				return Future<Returned>(this, responder, token);
-			} else {
-				return immediateCallToFuture();
-			}
-		}
+		});
+
+		template <StringLiteral Name>
+		constexpr static Detail::ChildDescribingFunction childAdder = [] (IRemoteCallableDescriptionFiller& filler) {
+			info.unnamedChildAdder(Name, filler);
+		};
+
 	};
 
-	template <auto Lambda, SerialisationFlags::Flags Flags, typename Placeholder>
+	template <SerialisationFlags::Flags Flags, typename Placeholder>
 	struct RpcLambdaRedirector : public IRemoteCallable {
-		static_assert(!std::is_same_v<Lambda, Lambda>, "Failed to match the template overload");
+		static_assert(!std::is_same_v<Placeholder, Placeholder>, "Failed to match the template overload");
 	};
 
 
-	template <auto Lambda, SerialisationFlags::Flags Flags, typename LambdaType, typename Returned, typename FirstArg, typename... Args>
-	struct RpcLambdaRedirector<Lambda, Flags, Returned (LambdaType::*)(FirstArg, Args...) const>
-			: public RpcLambdaParent<Lambda, Flags, decltype(Lambda), Returned, FirstArg, Args...> {
-		using Parent = RpcLambdaParent<Lambda, Flags, decltype(Lambda), Returned, FirstArg, Args...>;
+	template <typename LambdaType, SerialisationFlags::Flags Flags, typename Returned, typename FirstArg, typename... Args>
+	struct RpcLambdaRedirector<Flags, Returned (LambdaType::*)(FirstArg, Args...) const>
+			: public RpcLambdaParent<LambdaType, Flags, Returned, FirstArg, Args...> {
+		using Parent = RpcLambdaParent<LambdaType, Flags, Returned, FirstArg, Args...>;
+		using Parent::Parent;
+
+		Returned operator()(Args... args) const requires(Parent::usesParent()) {
+			IRpcResponder* responder = Parent::getResponder();
+			if (responder) {
+				return Parent::readResponse(responder, Parent::sendRequest(responder, std::forward<Args>(args)...));
+			} else {
+				return Parent::lambda(static_cast<FirstArg>(Parent::parent()), std::forward<Args>(args)...);
+			}
+		}
+		Returned operator()(FirstArg first, Args... args) const requires(!Parent::usesParent()) {
+			IRpcResponder* responder = Parent::getResponder();
+			if (responder) {
+				return Parent::readResponse(responder, Parent::sendRequest(responder, std::forward<FirstArg>(first), std::forward<Args>(args)...));
+			} else {
+				return Parent::lambda(std::forward<FirstArg>(first), std::forward<Args>(args)...);
+			}
+		}
+
+		Future<Returned> async(Args... args) const requires(Parent::usesParent()) {
+			IRpcResponder* responder = Parent::getResponder();
+			if (responder) {
+				RequestToken token = Parent::sendRequest(responder, std::forward<Args>(args)...);
+				return Future<Returned>(this, responder, token);
+			} else {
+				return Parent::immediateCallToFuture(static_cast<FirstArg>(Parent::parent()), std::forward<Args>(args)...);
+			}
+		}
+		Future<Returned> async(FirstArg first, Args... args) const requires(!Parent::usesParent()) {
+			IRpcResponder* responder = Parent::getResponder();
+			if (responder) {
+				RequestToken token = Parent::sendRequest(responder, std::forward<FirstArg>(first), std::forward<Args>(args)...);
+				return Future<Returned>(this, responder, token);
+			} else {
+				return Parent::immediateCallToFuture(std::forward<FirstArg>(first), std::forward<Args>(args)...);
+			}
+		}
 	};
 
 
-	template <auto Lambda, SerialisationFlags::Flags Flags, typename LambdaType, typename Returned>
-	struct RpcLambdaRedirector<Lambda, Flags, Returned (LambdaType::*)() const>
-			: public RpcLambdaParent<Lambda, Flags, decltype(Lambda), Returned, void> {
-		using Parent = RpcLambdaParent<Lambda, Flags, decltype(Lambda), Returned, void>;
+	template <typename LambdaType, SerialisationFlags::Flags Flags, typename Returned>
+	struct RpcLambdaRedirector<Flags, Returned (LambdaType::*)() const>
+			: public RpcLambdaParent<LambdaType, Flags, Returned, void> {
+		using Parent = RpcLambdaParent<LambdaType, Flags, Returned, void>;
+		using Parent::Parent;
+
+		Returned operator()() const {
+			IRpcResponder* responder = Parent::getResponder();
+			if (responder) {
+				return Parent::readResponse(responder, Parent::sendRequest(responder));
+			} else {
+				return Parent::lambda();
+			}
+		}
+
+		Future<Returned> async() const {
+			IRpcResponder* responder = Parent::getResponder();
+			if (responder) {
+				RequestToken token = Parent::sendRequest(responder);
+				return Future<Returned>(this, responder, token);
+			} else {
+				return Parent::immediateCallToFuture();
+			}
+		}
+
 	};
 
 	template <typename Parent, StringLiteral Name>
@@ -594,10 +623,18 @@ Detail::NamedFlagSetter name(const char* value) {
 	return Detail::NamedFlagSetter(value);
 }
 
-template <auto Func, SerialisationFlags::Flags Flags = SerialisationFlags::NONE>
-struct RpcLambda : public Detail::RpcLambdaRedirector<Func, Flags, decltype(&decltype(Func)::operator())> {
-	using Parent = typename Detail::RpcLambdaRedirector<Func, Flags, decltype(&decltype(Func)::operator())>::Parent;
+template <typename LambdaType, SerialisationFlags::Flags Flags = SerialisationFlags::NONE>
+struct RpcLambda : public Detail::RpcLambdaRedirector<Flags, decltype(&LambdaType::operator())> {
+	using Parent = typename Detail::RpcLambdaRedirector<Flags, decltype(&LambdaType::operator())>;
+	using Parent::Parent;
 };
+
+template <auto Func, SerialisationFlags::Flags Flags = SerialisationFlags::NONE>
+struct RpcStatelessLambda : public Detail::RpcLambdaRedirector<Flags, decltype(&decltype(Func)::operator())> {
+	using Parent = typename Detail::RpcLambdaRedirector<Flags, decltype(&decltype(Func)::operator())>;
+	RpcStatelessLambda() : Parent(Func) {}
+};
+
 
 namespace Detail {
 	class RpcObjectCommon : public IRemoteCallable {
@@ -608,7 +645,7 @@ namespace Detail {
 		}
 	public:
 		template <auto Func, SerialisationFlags::Flags Flags>
-		void addChild(RpcLambda<Func, Flags>* added) {
+		void addChild(RpcStatelessLambda<Func, Flags>* added) {
 			setSelfAsParent(added);
 		}
 	};
@@ -698,8 +735,8 @@ public:
 };
 
 template <auto Func, SerialisationFlags::Flags Flags = SerialisationFlags::NONE>
-struct RpcMember : public RpcLambda<Func, Flags> {
-	using ParentClass = typename RpcLambda<Func, Flags>::Parent;
+struct RpcMember : public RpcStatelessLambda<Func, Flags> {
+	using ParentClass = typename RpcStatelessLambda<Func, Flags>::Parent;
 	template <typename ParentObject, StringLiteral Name>
 	RpcMember(Detail::ChildObjectInitialisator<ParentObject, Name> initialisator) {
 #ifdef NO_DEFECT_REPORT_2118
@@ -709,15 +746,15 @@ struct RpcMember : public RpcLambda<Func, Flags> {
 			entry.name = Name;
 			entry.childGettingFunction = childGetter;
 			entry.childNameGettingFunction = childNameGetter<Name>;
-			entry.subtypesAddingFunction = ParentClass::subtypesAdder;
-			entry.childDescribingFunction = ParentClass::childAdder;
+			entry.subtypesAddingFunction = ParentClass::info.subtypesAdder;
+			entry.childDescribingFunction = ParentClass::template childAdder<Name>;
 			entry.offset = reinterpret_cast<intptr_t>(this) - reinterpret_cast<intptr_t>(ParentObject::setupInstance);
 			ParentObject::preparation->push_back(entry);
 			offset = entry.offset;
 		}
 #else
 		constexpr int parentIndex = Detail::AddChildRpc<ParentObject, 0, Name, Flags, childGetter, childNameGetter<Name>,
-				ParentClass::subtypesAdder, ParentClass::template childAdder<Name> >::index;
+				ParentClass::info.subtypesAdder, ParentClass::template childAdder<Name> >::index;
 		int& offset = Detail::getChildOffset<ParentObject, parentIndex>();
 		if (offset == -1) [[unlikely]] {
 			offset = reinterpret_cast<intptr_t>(this) - reinterpret_cast<intptr_t>(ParentObject::setupInstance);
@@ -752,3 +789,5 @@ private:
 } // namespace Bomba
 
 #undef NO_DEFECT_REPORT_2118
+
+#endif //BOMBA_RPC_OBJECT

@@ -262,7 +262,7 @@ public:
 			memcpy(_buffer.data(), added.data() + position, toCopy);
 			_buffer = BufferType(_buffer.begin() + toCopy, _buffer.end());
 			_size += toCopy;
-			if (_buffer.size() == 0) {
+			if (_buffer.size() == 0) [[likely]] {
 				if (!bufferFull()) return *this;
 			}
 			position += toCopy;
