@@ -123,7 +123,7 @@ class TcpServer {
 				if (!_longLeftovers.empty() && previousReadStart != _keptStart) [[unlikely]] {
 					// Something was read successfully
 					int left = _longLeftovers.size() - _keptStart;
-					if (left > _responseArray.size()) {
+					if (left > int(_responseArray.size())) {
 						_longLeftovers.erase(_longLeftovers.begin(), _longLeftovers.begin() + _keptStart);
 						_keptEnd = left;
 						_keptStart = 0;

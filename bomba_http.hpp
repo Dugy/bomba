@@ -830,7 +830,7 @@ class HttpClient : public IRpcResponder {
 
 	bool hasResponse(RequestToken token) override {
 		bool has = false;
-		getResponse(token, [&] (std::span<char> data, bool) {
+		getResponse(token, [&] (std::span<char>, bool) {
 			has = true;
 			return true;
 		});
@@ -842,11 +842,11 @@ class HttpClient : public IRpcResponder {
 
 		virtual bool firstLineReader(std::string_view firstLine) override {
 			int separator1 = 0;
-			while (firstLine[separator1] != ' ' && separator1 < firstLine.size())
+			while (firstLine[separator1] != ' ' && separator1 < int(firstLine.size()))
 				separator1++;
 			separator1++;
 			int separator2 = separator1 + 1;
-			while (firstLine[separator2] != ' ' && separator2 < firstLine.size())
+			while (firstLine[separator2] != ' ' && separator2 < int(firstLine.size()))
 				separator2++;
 			std::from_chars(&firstLine[separator1], &firstLine[separator2], resultCode);
 			return true;
@@ -925,7 +925,7 @@ public:
 						(state.resultCode >= 200 && state.resultCode < 300));
 				if (!identified)
 					_lastTokenRead.id++;
-				return {ServerReaction::OK, _lastTokenRead, state.parsePosition + state.bodySize};
+				return {ServerReaction::OK, _lastTokenRead, state.parsePosition + std::max(0, state.bodySize)};
 			});
 		}
 	}

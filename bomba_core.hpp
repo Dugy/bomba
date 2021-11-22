@@ -548,6 +548,7 @@ public:
 	virtual void generateDescription([[maybe_unused]] IRemoteCallableDescriptionFiller& filler) const {
 		// Not supported if not overloaded, does nothing
 	}
+	virtual ~IRemoteCallable() = default;
 };
 
 template <StringLiteral Separator, BetterAssembledString StringType = std::string>
