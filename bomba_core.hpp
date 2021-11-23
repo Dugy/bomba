@@ -516,11 +516,11 @@ protected:
 			logicError("Calling a remote procedure while not being a client");
 		return _responder;
 	}
-	
+
 public:
 	IRemoteCallable(IRemoteCallable* parent = nullptr, IRpcResponder* responder = nullptr)
 			: _parent(parent), _responder(responder) {}
-	
+
 	IRemoteCallable* parent() const {
 		return _parent;
 	}

@@ -30,7 +30,7 @@ enum class JsonRpcError {
 
 template <BetterAssembledString LocalStringType = std::string>
 class JsonRpcServerProtocol : public IHttpPostResponder {
-	IRemoteCallable* _callable = nullptr;
+	IRemoteCallable& _callable;
 	using Json = BasicJson<LocalStringType, GeneralisedBuffer>;
 
 	bool respondInternal(IStructuredInput& input, IStructuredOutput& output, Callback<> onResponseStarted) {
@@ -111,7 +111,7 @@ class JsonRpcServerProtocol : public IHttpPostResponder {
 			};
 			auto readMethod = [&] () {
 				auto path = input.readString(noFlags);
-				method = PathWithSeparator<".", LocalStringType>::findCallable(path, _callable);
+				method = PathWithSeparator<".", LocalStringType>::findCallable(path, &_callable);
 				if (!method) {
 					introduceError("Method not known", JsonRpcError::METHOD_NOT_FOUND);
 				}
@@ -175,7 +175,7 @@ class JsonRpcServerProtocol : public IHttpPostResponder {
 	}
 
 public:
-	JsonRpcServerProtocol(IRemoteCallable* callable) : _callable(callable) {
+	JsonRpcServerProtocol(IRemoteCallable& callable) : _callable(callable) {
 	}
 
 	bool post(std::string_view, std::string_view contentType, std::span<char> request, IWriteStarter& writeStarter) override {
@@ -224,10 +224,11 @@ template <BetterAssembledString LocalStringType = std::string,
 class JsonRpcServer {
 	JsonRpcServerProtocol<LocalStringType> _protocol;
 	HttpServer<ExpandingBufferType> _http;
+	static inline DummyGetResponder dummyGetResponderInstance = {};
 public:
 	using Session = typename decltype(_http)::Session;
-	JsonRpcServer(IRemoteCallable* callable, IHttpGetResponder* getResponder = nullptr)
-			: _protocol(callable), _http(getResponder, &_protocol) {
+	JsonRpcServer(IRemoteCallable& callable, IHttpGetResponder& getResponder = dummyGetResponderInstance)
+			: _protocol(callable), _http(getResponder, _protocol) {
 	}
 	Session getSession() {
 		return _http.getSession();
@@ -238,13 +239,13 @@ template <typename HttpType, BetterAssembledString LocalStringType = std::string
 class JsonRpcClientProtocol : public IRpcResponder {
 	using Json = BasicJson<LocalStringType, GeneralisedBuffer>;
 	constexpr static auto noFlags = Json::Output::Flags::NONE;
-	HttpType* _upper = nullptr;
+	HttpType& _upper = nullptr;
 public:
 	
 	RequestToken send(UserId user, const IRemoteCallable* method,
 				Callback<void(IStructuredOutput&, RequestToken token)> request) final override {
 		auto methodName = PathWithSeparator<".", LocalStringType>::constructPath(method);
-		return _upper->post("application/json", [methodName, &request]
+		return _upper.post("application/json", [methodName, &request]
 					(GeneralisedBuffer& output, RequestToken token) {
 			typename Json::Output writer(output);
 			writer.startWritingObject(noFlags, 3);
@@ -261,7 +262,7 @@ public:
 	}
 	bool getResponse(RequestToken token, Callback<void(IStructuredInput&)> reader) final override {
 		bool retval = false;
-		_upper->getResponse(token, [&reader, &retval, token] (std::span<char> message, bool success) {
+		_upper.getResponse(token, [&reader, &retval, token] (std::span<char> message, bool success) {
 			if (!success)
 				return false;
 			typename Json::Input input(std::string_view(message.data(), message.size()));
@@ -303,9 +304,9 @@ public:
 		return retval;
 	}
 	
-	JsonRpcClientProtocol(IRemoteCallable* callable, HttpType* upper)
+	JsonRpcClientProtocol(IRemoteCallable& callable, HttpType& upper)
 			: _upper(upper) {
-		callable->setResponder(this);
+		callable.setResponder(this);
 	}
 };
 
@@ -321,9 +322,9 @@ template <BetterAssembledString StringType = std::string, std::derived_from<Gene
 class JsonRpcClient : private Detail::HttpOwner<StringType, ExpandingBufferType>, public JsonRpcClientProtocol<HttpClient<StringType>> {
 	using HttpOwner = Detail::HttpOwner<StringType, ExpandingBufferType>;
 public:
-	JsonRpcClient(IRemoteCallable* callable, ITcpClient* client, std::string_view virtualHost)
+	JsonRpcClient(IRemoteCallable& callable, ITcpClient& client, std::string_view virtualHost)
 			: Detail::HttpOwner<StringType, ExpandingBufferType>{{client, virtualHost}},
-			  JsonRpcClientProtocol<HttpClient<StringType>>(callable, &(HttpOwner::http)) {}
+			  JsonRpcClientProtocol<HttpClient<StringType>>(callable, HttpOwner::http) {}
 
 	bool hasResponse(RequestToken token) override {
 		return static_cast<IRpcResponder&>(HttpOwner::http).hasResponse(token);

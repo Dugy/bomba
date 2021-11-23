@@ -237,10 +237,10 @@ Bomba::RpcLambda<[] (std::string newMessage = Bomba::name("sent"),
 			std::cout << "Received: " << newMessage << std::endl;
 	}
 }> method;
-Bomba::HtmlPostResponder postResponder(&method);
+Bomba::HtmlPostResponder postResponder(method);
 
-Bomba::HttpServer http(&getResponder, &postResponder);
-Bomba::TcpServer server(&http, 8080);
+Bomba::HttpServer http(getResponder, postResponder);
+Bomba::TcpServer server(http, 8080);
 server.run();
 ```
 
@@ -256,9 +256,10 @@ Bomba::RpcLambda<[] (std::string newMessage = Bomba::name("sent"),
 			std::cout << "Received: " << newMessage << std::endl;
 	}
 }> method;
-Bomba::HtmlPostResponder postResponder(&method);
-Bomba::HttpServer http(nullptr, &postResponder);
-Bomba::TcpServer server(&http, 8080);
+Bomba::HtmlPostResponder postResponder(method);
+Bomba::DummyGetResponder getResponder;
+Bomba::HttpServer http(getResponder, postResponder);
+Bomba::TcpServer server(http, 8080);
 server.run();
 ```
 
@@ -271,8 +272,8 @@ This is an example how to provide the contents of a folder (named `public_html` 
 //...
 
 Bomba::CachingFileServer cachingFileServer("public_html");
-Bomba::HttpServer http(&cachingFileServer);
-Bomba::TcpServer server(&http, 8080);
+Bomba::HttpServer http(cachingFileServer);
+Bomba::TcpServer server(http, 8080);
 server.run();
 ```
 
@@ -291,9 +292,9 @@ struct Rpc : RpcObject<Rpc> {
 	}> setMessage = child<"cout_print.html">;
 };
 Bomba::CachingFileServer cachingFileServer("public_html");
-Bomba::RpcGetResponder<std::string> getResponder(&cachingFileServer, &rpc);
-Bomba::HttpServer http(&getResponder);
-Bomba::TcpServer server(&http, 8080);
+Bomba::RpcGetResponder<std::string> getResponder(cachingFileServer, rpc);
+Bomba::HttpServer http(getResponder);
+Bomba::TcpServer server(http, 8080);
 server.run();
 ```
 
@@ -321,8 +322,8 @@ struct MessageKeeper : Bomba::RpcObject<MessageKeeper> {
 //...
 
 MessageKeeper method;
-Bomba::JsonRpcServer jsonRpcServer = {&method};
-Bomba::BackgroundTcpServer<decltype(jsonRpcServer)> server = {&jsonRpcServer, 8080};
+Bomba::JsonRpcServer jsonRpcServer = {method};
+Bomba::BackgroundTcpServer<decltype(jsonRpcServer)> server = {jsonRpcServer, 8080};
 server.run();
 ```
 
@@ -345,8 +346,8 @@ struct Summer : Bomba::RpcObject<Summer> {
 
 Summer method;
 Bomba::CachingFileServer cachingFileServer("public_html");
-Bomba::JsonRpcServer<std::string, Bomba::CachingFileServer> jsonRpcServer = {&method, &cachingFileServer};
-Bomba::BackgroundTcpServer<decltype(jsonRpcServer)> server = {&jsonRpcServer, 8080};
+Bomba::JsonRpcServer<std::string, Bomba::CachingFileServer> jsonRpcServer = {}method, cachingFileServer};
+Bomba::BackgroundTcpServer<decltype(jsonRpcServer)> server = {jsonRpcServer, 8080};
 server.run();
 ```
 
@@ -381,8 +382,8 @@ int main(int argc, char** argv) {
 
 	Bomba::CachingFileServer cachingFileServer("public_html");
 	cachingFileServer.addGeneratedFile("api_description.json", description);
-	Bomba::JsonRpcServer<std::string> jsonRpc(&method, &cachingFileServer);
-	Bomba::TcpServer server(&jsonRpc, 8080);
+	Bomba::JsonRpcServer<std::string> jsonRpc(method, cachingFileServer);
+	Bomba::TcpServer server(jsonRpc, 8080);
 	server.run();
 }
 ```
@@ -423,7 +424,7 @@ Bomba::RpcLambda<[] (std::string newMessage = Bomba::name("sent"),
 }> method;
 
 Bomba::SyncNetworkClient client("0.0.0.0", "8080");
-Bomba::HttpClient http(&client, "0.0.0.0");
+Bomba::HttpClient http(client, "0.0.0.0");
 method.setResponder(&http);
 method("A verÿ lông messäge.", 2, true);
 ```
@@ -461,8 +462,7 @@ struct MessageKeeper : Bomba::RpcObject<MessageKeeper> {
 
 MessageKeeper remote;
 Bomba::SyncNetworkClient client("0.0.0.0", "8080");
-Bomba::JsonRpcClient<> jsonRpc(&remote, &client, "0.0.0.0");
-remote.setResponder(&remote);
+Bomba::JsonRpcClient<> jsonRpc(remote, client, "0.0.0.0");
 
 std::cout << remote.getMessage() << std::endl;
 std::string newMessage;

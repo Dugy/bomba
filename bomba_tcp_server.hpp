@@ -18,7 +18,7 @@ using NetStringView = std::experimental::fundamentals_v1::basic_string_view<char
 
 template <typename Responder>
 class TcpServer {
-	Responder* _responder = nullptr;
+	Responder& _responder;
 	Net::io_context _context;
 	Net::ip::tcp::endpoint _endpoint;
 	Net::ip::tcp::acceptor _acceptor = {_context, _endpoint};
@@ -38,8 +38,8 @@ class TcpServer {
 		TcpServer* _parent = nullptr;
 		int _index = {};
 
-		Session(Net::ip::tcp::socket&& socket, Responder* responder, TcpServer* parent, int index)
-			: _socket(std::move(socket)), _responder(responder->getSession()), _parent(parent), _index(index) { }
+		Session(Net::ip::tcp::socket&& socket, Responder& responder, TcpServer* parent, int index)
+			: _socket(std::move(socket)), _responder(responder.getSession()), _parent(parent), _index(index) { }
 
 		ServerReaction readBuffer() {
 			std::span<char> input;
@@ -181,11 +181,11 @@ class TcpServer {
 	}
 
 public:
-	TcpServer(Responder* responder, int port, int threads)
+	TcpServer(Responder& responder, int port, int threads)
 			: _context(threads), _responder(responder), _endpoint(Net::ip::tcp::v4(), port) {
 		startSession();
 	}
-	TcpServer(Responder* responder, int port)
+	TcpServer(Responder& responder, int port)
 			: _responder(responder), _endpoint(Net::ip::tcp::v4(), port) {
 		startSession();
 	}
@@ -216,11 +216,11 @@ class BackgroundTcpServer : private TcpServer<Responder> {
 		});
 	}
 public:
-	BackgroundTcpServer(Responder* responder, int port, int threads)
+	BackgroundTcpServer(Responder& responder, int port, int threads)
 			: TcpServer<Responder>(responder, port, threads) {
 		startWorker();
 	}
-	BackgroundTcpServer(Responder* responder, int port)
+	BackgroundTcpServer(Responder& responder, int port)
 			: TcpServer<Responder>(responder, port) {
 		startWorker();
 	}

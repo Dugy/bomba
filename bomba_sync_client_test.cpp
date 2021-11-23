@@ -24,8 +24,7 @@ int main(int argc, char** argv) {
 	AdvancedRpcClass method;
 
 	Bomba::SyncNetworkClient client("0.0.0.0", "8080");
-	Bomba::JsonRpcClient<> jsonRpc(&method, &client, "0.0.0.0");
-	method.setResponder(&jsonRpc); // TODO: Why am I setting this twice?
+	Bomba::JsonRpcClient<> jsonRpc(method, client, "0.0.0.0");
 
 	std::cout << method.getMessage() << std::endl;
 	std::string newMessage = "Dread";

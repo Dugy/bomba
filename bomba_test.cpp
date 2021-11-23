@@ -307,9 +307,9 @@ struct FakeClient : ITcpClient {
 
 template <typename Responder>
 struct FakeServer {
-	Responder* responder;
+	Responder& responder;
 	std::pair<std::string, ServerReaction> respond(std::string request) {
-		auto session = responder->getSession();
+		auto session = responder.getSession();
 		std::string response;
 		ServerReaction result = session.respond(std::span<char>(request.data(), request.size()),
 						[&] (std::span<const char> output) {
@@ -677,7 +677,7 @@ int main(int argc, char** argv) {
 		dummyRpcBackup.message = "actually...";
 		DummyWriteStarter writeStarter;
 		auto viewToSpan = [] (std::string_view str) { return std::span<char>(const_cast<char*>(str.data()), str.size()); };
-		JsonRpcServerProtocol protocol = &dummyRpc;
+		JsonRpcServerProtocol protocol = dummyRpc;
 		protocol.post("", "application/json", viewToSpan(dummyRpcRequest1), writeStarter);
 		doATest(std::string_view(writeStarter.buffer), dummyRpcReply1);
 
@@ -708,7 +708,7 @@ int main(int argc, char** argv) {
 		DummyRpcClass dummyRpc;
 		dummyRpc.setBackup(&dummyRpcBackup);
 		FakeHttp http;
-		JsonRpcClientProtocol client{&dummyRpc, &http};
+		JsonRpcClientProtocol client{dummyRpc, http};
 		http.toReturn = dummyRpcReply1;
 		doATest(dummyRpc.getMessage(), "nevermind");
 		doATest(http.written, dummyRpcRequest1);
@@ -775,7 +775,7 @@ int main(int argc, char** argv) {
 		AdvancedRpcClass advancedRpc;
 		DummyWriteStarter writeStarter;
 		auto viewToSpan = [] (std::string_view str) { return std::span<char>(const_cast<char*>(str.data()), str.size()); };
-		Bomba::JsonRpcServerProtocol protocol = &advancedRpc;
+		Bomba::JsonRpcServerProtocol protocol = advancedRpc;
 		protocol.post("", "application/json", viewToSpan(advancedRpcRequest1), writeStarter);
 		doATest(std::string_view(writeStarter.buffer), advancedRpcResponse1);
 		writeStarter.buffer.clear();
@@ -786,7 +786,7 @@ int main(int argc, char** argv) {
 		doATest(std::string_view(writeStarter.buffer), advancedRpcResponse3);
 
 		FakeHttp http;
-		Bomba::JsonRpcClientProtocol client{&advancedRpc, &http};
+		Bomba::JsonRpcClientProtocol client{advancedRpc, http};
 		http.toReturn = advancedRpcResponse1;
 		advancedRpc.setMessage("Flag");
 		doATest(http.written, advancedRpcRequest1);
@@ -821,7 +821,7 @@ int main(int argc, char** argv) {
 		std::cout << "Testing HTTP client" << std::endl;
 
 		FakeClient client;
-		Bomba::HttpClient http(&client, "faecesbook.con");
+		Bomba::HttpClient http(client, "faecesbook.con");
 		auto token = http.get("/conspiracy.html");
 		doATest(client.request, expectedGet);
 
@@ -861,8 +861,8 @@ R"~(<!doctype html>
 		Bomba::SimpleGetResponder getResponder;
 		getResponder.resource = someHtml;
 		Bomba::DummyPostResponder postResponder;
-		Bomba::HttpServer http = {&getResponder, &postResponder};
-		FakeServer server = {&http};
+		Bomba::HttpServer http = {getResponder, postResponder};
+		FakeServer server = {http};
 		auto [response, reaction] = server.respond(expectedGet);
 		doATest(int(reaction), int(ServerReaction::OK));
 		doATestIgnoringWhitespace(response, sentHtml);
@@ -892,7 +892,7 @@ R"~(<!doctype html>
 	{
 		std::cout << "Testing better HTTP client" << std::endl;
 		FakeClient client;
-		Bomba::HttpClient<> http(&client, "faecesbook.con");
+		Bomba::HttpClient<> http(client, "faecesbook.con");
 		auto token = http.get("/?assigned=%26%2344608%3B%26%2351221%3B%26%2351008%3B+told+us");
 		doATest(client.request, longerExpectedGet);
 		client.response = sentHtml;
@@ -918,10 +918,10 @@ R"~(<!doctype html>
 		Bomba::SimpleGetResponder getResponder;
 		getResponder.resource = someHtml;
 		InlineMethod inlineMethod;
-		Bomba::RpcGetResponder<std::string> betterGetResponder(&getResponder, &inlineMethod);
-		Bomba::HtmlPostResponder postResponder(&inlineMethod);
-		Bomba::HttpServer http(&betterGetResponder, &postResponder);
-		FakeServer server = {&http};
+		Bomba::RpcGetResponder<std::string> betterGetResponder(getResponder, inlineMethod);
+		Bomba::HtmlPostResponder postResponder(inlineMethod);
+		Bomba::HttpServer http(betterGetResponder, postResponder);
+		FakeServer server = {http};
 		{
 			auto [response, reaction] = server.respond(expectedGet);
 			doATest(int(reaction), int(ServerReaction::OK));
@@ -945,16 +945,16 @@ R"~(<!doctype html>
 		struct Fixture {
 			Bomba::SimpleGetResponder getResponder;
 			InlineMethod methodServer;
-			Bomba::RpcGetResponder<std::string> betterGetResponder = {&getResponder, &methodServer};
-			Bomba::HtmlPostResponder<> postResponder = {&methodServer};
-			Bomba::HttpServer<> httpServer = {&betterGetResponder, &postResponder};
-			Bomba::BackgroundTcpServer<decltype(httpServer)> server = {&httpServer, 8901}; // Very unlikely this port will be used for something
+			Bomba::RpcGetResponder<std::string> betterGetResponder = {getResponder, methodServer};
+			Bomba::HtmlPostResponder<> postResponder = {methodServer};
+			Bomba::HttpServer<> httpServer = {betterGetResponder, postResponder};
+			Bomba::BackgroundTcpServer<decltype(httpServer)> server = {httpServer, 8901}; // Very unlikely this port will be used for something
 
 			InlineMethod methodClient;
 			std::string targetAddress = "0.0.0.0";
 			std::string targetPort = "8901";
 			Bomba::SyncNetworkClient client = {targetAddress, targetPort};
-			Bomba::HttpClient<> httpClient = {&client, targetAddress};		
+			Bomba::HttpClient<> httpClient = {client, targetAddress};
 
 			Fixture(const std::string& html) {
 				getResponder.resource = html;
@@ -1015,7 +1015,7 @@ R"~(<!doctype html>
 		auto workload = [&] () {
 			std::array<Bomba::RequestToken, 20000> requests = {};
 			Bomba::SyncNetworkClient client = {fixture.targetAddress, fixture.targetPort};
-			Bomba::HttpClient<> httpClient = {&client, fixture.targetAddress};
+			Bomba::HttpClient<> httpClient = {client, fixture.targetAddress};
 			
 			for (Bomba::RequestToken& token : requests)
 				token = httpClient.get("/");
@@ -1078,9 +1078,8 @@ R"~(<!doctype html>
 		AdvancedRpcClass method;
 
 		FakeClient client;
-		Bomba::HttpClient<> http(&client, "faecesbook.con");
-		Bomba::JsonRpcClient<> jsonRpc(&method, &client, "0.0.0.0");
-		method.setResponder(&jsonRpc);
+		Bomba::HttpClient<> http(client, "faecesbook.con");
+		Bomba::JsonRpcClient<> jsonRpc(method, client, "0.0.0.0");
 
 		client.response = expectedJsonRpcResponse;
 		doATest(method.sum(3, 5), 8);
@@ -1092,8 +1091,8 @@ R"~(<!doctype html>
 		AdvancedRpcClass method;
 		Bomba::SimpleGetResponder getResponder;
 		getResponder.resource = someHtml;
-		Bomba::JsonRpcServer<std::string> jsonRpc(&method, &getResponder);
-		FakeServer server = {&jsonRpc};
+		Bomba::JsonRpcServer<std::string> jsonRpc(method, getResponder);
+		FakeServer server = {jsonRpc};
 		auto [response, reaction] = server.respond(expectedJsonRpcRequest);
 		doATest(int(reaction), int(ServerReaction::OK));
 		doATestIgnoringWhitespace(response, expectedJsonRpcResponse);
@@ -1102,16 +1101,12 @@ R"~(<!doctype html>
 	auto makeJsonRpcTestFixture = [&] {
 		struct Fixture {
 			AdvancedRpcClass methodServer;
-			Bomba::JsonRpcServer<std::string> jsonRpcServer = {&methodServer};
-			Bomba::BackgroundTcpServer<decltype(jsonRpcServer)> server = {&jsonRpcServer, 8901}; // Very unlikely this port will be used for something
+			Bomba::JsonRpcServer<std::string> jsonRpcServer = {methodServer};
+			Bomba::BackgroundTcpServer<decltype(jsonRpcServer)> server = {jsonRpcServer, 8901}; // Very unlikely this port will be used for something
 
 			AdvancedRpcClass methodClient;
 			Bomba::SyncNetworkClient client = {"0.0.0.0", "8901"};
-			Bomba::JsonRpcClient<> jsonRpcClient = {&methodClient, &client, "0.0.0.0"};
-			Fixture() {
-				methodClient.setResponder(&jsonRpcClient);
-			}
-
+			Bomba::JsonRpcClient<> jsonRpcClient = {methodClient, client, "0.0.0.0"};
 		};
 		return Fixture();
 	};
@@ -1418,7 +1413,7 @@ R"~({
 
 		DummyWriteStarter writeStarter;
 		auto viewToSpan = [] (std::string_view str) { return std::span<char>(const_cast<char*>(str.data()), str.size()); };
-		Bomba::JsonRpcServerProtocol protocol = &object;
+		Bomba::JsonRpcServerProtocol protocol = object;
 		protocol.post("", "application/json", viewToSpan(advancedRpcRequest2), writeStarter);
 		doATest(std::string_view(writeStarter.buffer), alternateAdvancedRequest2Response);
 
@@ -1435,7 +1430,7 @@ R"~({
 		backupObject.add("backup", RpcLambdaHolder::nonOwning(object));
 
 		DummyWriteStarter writeStarter2;
-		Bomba::JsonRpcServerProtocol protocol2 = &backupObject;
+		Bomba::JsonRpcServerProtocol protocol2 = backupObject;
 		protocol2.post("", "application/json", viewToSpan(dummyRpcRequest4), writeStarter2);
 		doATest(std::string_view(writeStarter2.buffer), alternateAdvancedRequest2Response2);
 	}

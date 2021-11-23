@@ -517,13 +517,13 @@ struct DummyPostResponder : IHttpPostResponder {
 
 template <BetterAssembledString ResponseStringType = std::string>
 class HtmlPostResponder : public IHttpPostResponder {
-	IRemoteCallable* _callable = nullptr;
+	IRemoteCallable& _callable = nullptr;
 public:
-	HtmlPostResponder(IRemoteCallable* callable) : _callable(callable) {}
+	HtmlPostResponder(IRemoteCallable& callable) : _callable(callable) {}
 
 	bool post(std::string_view path, std::string_view, std::span<char> request, IWriteStarter&) override {
 		std::string_view editedPath = path.substr(1);
-		const IRemoteCallable* method = PathWithSeparator<"/", ResponseStringType>::findCallable(editedPath, _callable);
+		const IRemoteCallable* method = PathWithSeparator<"/", ResponseStringType>::findCallable(editedPath, &_callable);
 		if (!method)
 			return false;
 		typename HtmlMessageEncoding<ResponseStringType>::Input input = {std::string_view(request.data(), request.size())};
@@ -560,13 +560,13 @@ struct DownloadIfFilePresent : IHttpDispatcher {
 
 template <BetterAssembledString ResponseStringType = std::string>
 class RpcGetResponder : public IHttpGetResponder {
-	IHttpGetResponder* _provider = nullptr;
-	IRemoteCallable* _callable = nullptr;
+	IHttpGetResponder& _provider;
+	IRemoteCallable& _callable;
 	static constexpr DownloadIfFilePresent<HtmlMessageEncoding<ResponseStringType>> defaultDispatcher = {};
-	const IHttpDispatcher* _dispatcher = nullptr;
+	const IHttpDispatcher& _dispatcher = nullptr;
 
 public:
-	RpcGetResponder(IHttpGetResponder* provider, IRemoteCallable* callable, const IHttpDispatcher* dispatcher = &defaultDispatcher)
+	RpcGetResponder(IHttpGetResponder& provider, IRemoteCallable& callable, const IHttpDispatcher& dispatcher = defaultDispatcher)
 		: _provider(provider), _callable(callable), _dispatcher(dispatcher) {}
 
 	bool get(std::string_view entirePath, IWriteStarter& writeResponse) override {
@@ -576,17 +576,15 @@ public:
 		std::optional<typename HtmlMessageEncoding<ResponseStringType>::Input> inputParsed = std::nullopt;
 		if (transition != std::string_view::npos) {
 			path = entirePath.substr(0, transition);
-			if (_callable) {
-				std::string_view editedPath = path.substr(1);
-				method = PathWithSeparator<"/", ResponseStringType>::findCallable(editedPath, _callable);
-			}
+			std::string_view editedPath = path.substr(1);
+			method = PathWithSeparator<"/", ResponseStringType>::findCallable(editedPath, &_callable);
 			inputParsed.emplace(entirePath.substr(transition + 1));
 		} else {
 			path = entirePath;
 		}
-		return _dispatcher->dispatch(method, method ? &*inputParsed : nullptr, writeResponse,
+		return _dispatcher.dispatch(method, method ? &*inputParsed : nullptr, writeResponse,
 				[&] (IWriteStarter& outputProvider) -> bool {
-			return _provider->get(path, outputProvider);
+			return _provider.get(path, outputProvider);
 		});
 	}
 };
@@ -594,16 +592,20 @@ public:
 template <std::derived_from<GeneralisedBuffer> ExpandingBufferType = ExpandingBuffer<1024>>
 class HttpServer {
 	struct Responders {
-		IHttpGetResponder* getResponder = nullptr;
-		IHttpPostResponder* postResponder = nullptr;
+		IHttpGetResponder& getResponder;
+		IHttpPostResponder& postResponder;
 	} _responders;
 
+	static inline DummyGetResponder dummyGetResponderInstance = {};
+	static inline DummyGetResponder dummyPostResponderInstance = {};
 public:
-	HttpServer(IHttpGetResponder* getResponder = nullptr, IHttpPostResponder* postResponder = nullptr)
+	HttpServer(IHttpGetResponder& getResponder = dummyGetResponderInstance, IHttpPostResponder& postResponder = dummyPostResponderInstance)
 			: _responders({getResponder, postResponder}) {}
 			
 	class Session : ITcpResponder {
 		Responders _responders;
+
+		Session(Responders responders) : _responders(responders) {}
 
 		struct ParseState : Detail::HttpParseState {
 			enum RequestType {
@@ -740,7 +742,7 @@ public:
 				std::string_view path{input.data() + _state.path.first, size_t(_state.path.second)};
 				try {
 					if (_state.requestType == ParseState::GET_REQUEST) {
-						success = _responders.getResponder->get(path, correctResponseWriter);
+						success = _responders.getResponder.get(path, correctResponseWriter);
 						if (!success) [[unlikely]] {
 							constexpr std::string_view errorMessage =
 									"HTTP/1.1 404 Not Found\r\n"
@@ -751,7 +753,7 @@ public:
 					} else {
 						std::span<char> body = {input.begin() + _state.parsePosition, input.begin() + _state.parsePosition + _state.bodySize};
 						std::string_view contentType = {input.data() + _state.contentType.first, size_t(_state.contentType.second)};
-						success = _responders.postResponder->post(path, contentType, body, correctResponseWriter);
+						success = _responders.postResponder.post(path, contentType, body, correctResponseWriter);
 						if (!success) [[unlikely]] {
 							constexpr std::string_view errorMessage =
 									"HTTP/1.1 400 Bad Request\r\n"
@@ -792,15 +794,14 @@ public:
 	};
 	
 	Session getSession() {
-		Session made;
-		made._responders = _responders;
+		Session made(_responders);
 		return made;
 	}
 };
 
 template <BetterAssembledString LocalStringType = std::string, std::derived_from<GeneralisedBuffer> ExpandingBufferType = ExpandingBuffer<>>
 class HttpClient : public IRpcResponder {
-	ITcpClient* _client = nullptr;
+	ITcpClient& _client;
 	RequestToken _lastTokenWritten = {0};
 	RequestToken _lastTokenRead = {0};
 	std::string_view _virtualHost;
@@ -855,7 +856,7 @@ class HttpClient : public IRpcResponder {
 	};
 
 public:
-	HttpClient(ITcpClient* client, std::string_view virtualHost) : _client(client), _virtualHost(virtualHost) {}
+	HttpClient(ITcpClient& client, std::string_view virtualHost) : _client(client), _virtualHost(virtualHost) {}
 
 	RequestToken post(std::string_view contentType,
 			Callback<void(ExpandingBufferType&, RequestToken token)> request) {
@@ -876,7 +877,7 @@ public:
 		std::to_chars(const_cast<char*>(&reqView[sizeof(correctIntro) - 1]),
 				const_cast<char*>(&reqView[sizeof(correctIntro) + sizeof(unsetSize)]),
 				written.size() - sizeBefore);
-		_client->writeRequest(written);
+		_client.writeRequest(written);
 		return _lastTokenWritten;
 	}
 
@@ -891,7 +892,7 @@ public:
 		written += _virtualHost;
 		written += suffix;
 		_lastTokenWritten.id++;
-		_client->writeRequest(written);
+		_client.writeRequest(written);
 		return _lastTokenWritten;
 	}
 
@@ -899,7 +900,7 @@ public:
 		bool obtained = false;
 		while (!obtained) {
 			ParseState state;
-			_client->getResponse(token, [&, this] (std::span<char> input, bool identified)
+			_client.getResponse(token, [&, this] (std::span<char> input, bool identified)
 						-> std::tuple<ServerReaction, RequestToken, int64_t> {
 				// Locate the header's span
 				if (state.bodySize == -1) {

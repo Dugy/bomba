@@ -43,7 +43,7 @@ int main(int argc, char** argv) {
 
 	Bomba::CachingFileServer cachingFileServer("../public_html");
 	cachingFileServer.addGeneratedFile("api_description.json", description);
-	Bomba::JsonRpcServer jsonRpc(&method, &cachingFileServer);
-	Bomba::TcpServer server(&jsonRpc, 8080);
+	Bomba::JsonRpcServer jsonRpc(method, cachingFileServer);
+	Bomba::TcpServer server(jsonRpc, 8080);
 	server.run();
 }
