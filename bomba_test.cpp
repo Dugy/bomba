@@ -1037,7 +1037,8 @@ R"~(<!doctype html>
 		auto endTime = std::chrono::steady_clock::now();
 		int average = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime).count() / totalRequests;
 		
-		std::cout << " average response time is " << average << " ns per request" << std::endl;
+		std::cout << " average response time is " << average << " ns per request, " <<
+					fixture.server.averageResponseTime().count() << " ns reported internally" << std::endl;
 	}
 
 	{
