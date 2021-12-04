@@ -15,38 +15,38 @@ namespace Bomba {
 namespace Detail {
 class JsonWspTypicalDescriptions : public IPropertyDescriptionFiller {
 protected:
-	IStructuredOutput& _output;
+	IStructuredOutput::ObjectFiller& _output;
 	static constexpr SerialisationFlags::Flags noFlags = SerialisationFlags::NONE;
 
 public:
-	JsonWspTypicalDescriptions(IStructuredOutput& output) : _output(output) {}
+	JsonWspTypicalDescriptions(IStructuredOutput::ObjectFiller& output) : _output(output) {}
 
 	void addInteger() override {
-		_output.writeString(noFlags, "number");
+		_output.underlyingOutput().writeString(noFlags, "number");
 	}
 
 	void addFloat() override {
-		_output.writeString(noFlags, "number");
+		_output.underlyingOutput().writeString(noFlags, "number");
 	}
 
 	void addBoolean() override {
-		_output.writeString(noFlags, "boolean");
+		_output.underlyingOutput().writeString(noFlags, "boolean");
 	}
 
 	void addString() override {
-		_output.writeString(noFlags, "string");
+		_output.underlyingOutput().writeString(noFlags, "string");
 	}
 
 	void addArray(Callback<void(IPropertyDescriptionFiller&)> filler) override {
-		_output.startWritingArray(noFlags, 1);
-		_output.introduceArrayElement(noFlags, 0);
+		_output.underlyingOutput().startWritingArray(noFlags, 1);
+		_output.underlyingOutput().introduceArrayElement(noFlags, 0);
 		filler(*this);
-		_output.endWritingArray(noFlags);
+		_output.underlyingOutput().endWritingArray(noFlags);
 	}
 
 	void addSubobject(std::optional<std::string_view> typeName,
 			Callback<void(IPropertyDescriptionFiller&)>) override {
-		_output.writeString(noFlags, typeName.value_or("object"));
+		_output.underlyingOutput().writeString(noFlags, typeName.value_or("object"));
 	}
 };
 
@@ -54,16 +54,13 @@ public:
 
 
 class JsonWspMembersDescription : public Detail::JsonWspTypicalDescriptions {
-	int _index = 0;
-
 public:
-	JsonWspMembersDescription(IStructuredOutput& output)
+	JsonWspMembersDescription(IStructuredOutput::ObjectFiller& output)
 			: Detail::JsonWspTypicalDescriptions(output) {}
 
 	void addMember(std::string_view name, std::string_view, Callback<> writer) override {
-		_output.introduceObjectMember(noFlags, name, _index);
+		_output.introduceMember(name);
 		writer();
-		_index++;
 	}
 
 	void addOptional(Callback<void(IPropertyDescriptionFiller&)> filler) override {
@@ -72,40 +69,30 @@ public:
 };
 
 class JsonWspTypeDescription : public ISerialisableDescriptionFiller {
-	IStructuredOutput& _output;
-	int _index = 0;
+	IStructuredOutput::ObjectFiller& _output;
 	static constexpr SerialisationFlags::Flags noFlags = SerialisationFlags::NONE;
 
 public:
-	JsonWspTypeDescription(IStructuredOutput& output) : _output(output) {}
+	JsonWspTypeDescription(IStructuredOutput::ObjectFiller& output) : _output(output) {}
 
 	void addMoreTypes(Callback<void(ISerialisableDescriptionFiller&)> otherFiller) override {
 		otherFiller(*this);
 	}
 
 	void fillMembers(std::string_view name, Callback<void(IPropertyDescriptionFiller&)> filler) override {
-		_output.introduceObjectMember(noFlags, name, _index);
-		_output.startWritingObject(noFlags, IStructuredOutput::UNKNOWN_SIZE);
-		JsonWspMembersDescription descriptor(_output);
+		auto object = _output.writeObject(name);
+		JsonWspMembersDescription descriptor(object);
 		filler(descriptor);
-		_output.endWritingObject(noFlags);
-		_index++;
 	}
 };
 
 
 
-static void writeJsonWspDocumentation(IStructuredOutput& output, std::string_view description, int objectIndex) {
-	static constexpr SerialisationFlags::Flags noFlags = SerialisationFlags::NONE;
-	output.introduceObjectMember(noFlags, "doc_lines", objectIndex);
+static void writeJsonWspDocumentation(IStructuredOutput::ObjectFiller& output, std::string_view description) {
+	auto made = output.writeArray("doc_lines", description.size() ? 1 : 0);
 	if (description.size() > 0) {
-		output.startWritingArray(noFlags, 1);
-		output.introduceArrayElement(noFlags, 0);
-		output.writeString(noFlags, description);
-	} else {
-		output.startWritingArray(noFlags, 0);
+		made.writeString(description);
 	}
-	output.endWritingArray(noFlags);
 }
 
 class JsonWspMethodDescription : public Detail::JsonWspTypicalDescriptions {
@@ -114,21 +101,17 @@ class JsonWspMethodDescription : public Detail::JsonWspTypicalDescriptions {
 
 public:
 	JsonWspMethodDescription(const JsonWspMethodDescription&) = default;
-	JsonWspMethodDescription(IStructuredOutput& output, int& argCount)
+	JsonWspMethodDescription(IStructuredOutput::ObjectFiller& output, int& argCount)
 			: Detail::JsonWspTypicalDescriptions(output), _argCount(argCount){}
 
 	void addMember(std::string_view name, std::string_view description, Callback<> writer) override {
 		_argCount++; // The numbering printed starts at 1
-		_output.introduceObjectMember(noFlags, name, _argCount - 1);
-		_output.startWritingObject(noFlags, 4);
-		_output.introduceObjectMember(noFlags, "def_order", 0);
-		_output.writeInt(noFlags, _argCount);
-		writeJsonWspDocumentation(_output, description, 1);
-		_output.introduceObjectMember(noFlags, "type", 2);
+		auto result = _output.writeObject(name, 4);
+		result.writeInt("def_order", _argCount);
+		writeJsonWspDocumentation(result, description);
+		result.introduceMember("type");
 		writer();
-		_output.introduceObjectMember(noFlags, "optional", 3);
-		_output.writeBool(noFlags, _optional);
-		_output.endWritingObject(noFlags);
+		result.writeBool("optional", _optional);
 	}
 
 	void addOptional(Callback<void(IPropertyDescriptionFiller&)> filler) override {
@@ -140,17 +123,16 @@ public:
 class JsonWspReturnDescription : public Detail::JsonWspTypicalDescriptions {
 	int _returnValues = 0;
 public:
-	JsonWspReturnDescription(IStructuredOutput& output)
+	JsonWspReturnDescription(IStructuredOutput::ObjectFiller& output)
 			: Detail::JsonWspTypicalDescriptions(output) {}
 
 	void addMember(std::string_view, std::string_view description, Callback<> writer) override {
 		if (_returnValues > 0)
 			throw std::logic_error("Can't send multiple return values through JSON-WSP");
-		_output.startWritingObject(noFlags, 2);
-		writeJsonWspDocumentation(_output, description, 0);
-		_output.introduceObjectMember(noFlags, "type", 1);
+		auto made = _output.writeObject("ret_info");
+		writeJsonWspDocumentation(made, description);
+		made.introduceMember("type");
 		writer();
-		_output.endWritingObject(noFlags);
 		_returnValues++;
 	}
 
@@ -160,19 +142,18 @@ public:
 
 	~JsonWspReturnDescription() {
 		if (_returnValues == 0) {
-			addMember("", "", [&] { _output.writeNull(noFlags); });
+			addMember("", "", [&] { _output.underlyingOutput().writeNull(noFlags); });
 		}
 	}
 };
 
 template <BetterAssembledString StringType>
 class JsonWspDescription : public IRemoteCallableDescriptionFiller {
-	IStructuredOutput& _output;
-	int _functionCount = 0;
+	IStructuredOutput::ObjectFiller& _output;
 	StringType _path;
 	static constexpr SerialisationFlags::Flags noFlags = SerialisationFlags::NONE;
 public:
-	JsonWspDescription(IStructuredOutput& output, std::string_view name = "", std::string_view prefix = "") : _output(output) {
+	JsonWspDescription(IStructuredOutput::ObjectFiller& output, std::string_view name = "", std::string_view prefix = "") : _output(output) {
 		if (!prefix.empty()) {
 			_path += prefix;
 			_path += '.';
@@ -188,22 +169,16 @@ public:
 		StringType methodName;
 		methodName += _path;
 		methodName += name;
-		_output.introduceObjectMember(noFlags, methodName, _functionCount);
-		_output.startWritingObject(noFlags, 3);
-		writeJsonWspDocumentation(_output, description, 0);
-		_output.introduceObjectMember(noFlags, "params", 1);
-		_output.startWritingObject(noFlags, IStructuredOutput::UNKNOWN_SIZE);
-		int methodDescriptorArgCount = 0;
-		JsonWspMethodDescription methodDescriptor(_output, methodDescriptorArgCount);
-		paramFiller(methodDescriptor);
-		_output.endWritingObject(noFlags);
-		_output.introduceObjectMember(noFlags, "ret_info", 2);
+		auto methodObject = _output.writeObject(methodName, 3);
+		writeJsonWspDocumentation(methodObject, description);
 		{
-			JsonWspReturnDescription returnDescriptor(_output);
-			returnFiller(returnDescriptor);
+			auto paramsObject = methodObject.writeObject("params");
+			int methodDescriptorArgCount = 0;
+			JsonWspMethodDescription methodDescriptor(paramsObject, methodDescriptorArgCount);
+			paramFiller(methodDescriptor);
 		}
-		_output.endWritingObject(noFlags);
-		_functionCount++;
+		JsonWspReturnDescription returnDescriptor(methodObject);
+		returnFiller(returnDescriptor);
 	}
 	void addSubobject(std::string_view name, Callback<void(IRemoteCallableDescriptionFiller&)> nestedFiller) override {
 		JsonWspDescription<StringType> subobjectFiller(_output, name, _path);
@@ -216,32 +191,23 @@ StringType describeInJsonWsp(IRemoteCallable& callable, std::string_view url, st
 	StringType rawOutput;
 	typename BasicJson<AuxiliaryStrings, StringType>::Output outputInstance(rawOutput);
 	IStructuredOutput& output = outputInstance;
-	constexpr SerialisationFlags::Flags noFlags = SerialisationFlags::NONE;
-	output.startWritingObject(noFlags, 6);
-	int index = 0;
-	output.introduceObjectMember(noFlags, "type", index++);
-	output.writeString(noFlags, "jsonwsp/description");
-	output.introduceObjectMember(noFlags, "version", index++);
-	output.writeString(noFlags, "1.0");
-	output.introduceObjectMember(noFlags, "servicename", index++);
-	output.writeString(noFlags, name);
-	output.introduceObjectMember(noFlags, "url", index++);
-	output.writeString(noFlags, url);
-	output.introduceObjectMember(noFlags, "types", index++);
-	output.startWritingObject(noFlags, IStructuredOutput::UNKNOWN_SIZE);
 	{
-		JsonWspTypeDescription typeDescriptor(output);
-		callable.listTypes(typeDescriptor);
+		auto mainObject = output.writeObject(6);
+		mainObject.writeString("type", "jsonwsp/description");
+		mainObject.writeString("version", "1.0");
+		mainObject.writeString("servicename", name);
+		mainObject.writeString("url", url);
+		{
+			auto typesObject = mainObject.writeObject("types");
+			JsonWspTypeDescription typeDescriptor(typesObject);
+			callable.listTypes(typeDescriptor);
+		}
+		{
+			auto typesObject = mainObject.writeObject("methods");
+			JsonWspDescription<StringType> rpcDescriptor(typesObject);
+			callable.generateDescription(rpcDescriptor);
+		}
 	}
-	output.endWritingObject(noFlags);
-	output.introduceObjectMember(noFlags, "methods", index++);
-	output.startWritingObject(noFlags, IStructuredOutput::UNKNOWN_SIZE);
-	{
-		JsonWspDescription<StringType> rpcDescriptor(output);
-		callable.generateDescription(rpcDescriptor);
-	}
-	output.endWritingObject(noFlags);
-	output.endWritingObject(noFlags);
 	return rawOutput;
 }
 

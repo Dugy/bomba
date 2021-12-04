@@ -81,12 +81,9 @@ class JsonRpcServerProtocol : public IHttpPostResponder {
 				return;
 
 			output.introduceObjectMember(noFlags, "error", 2);
-			output.startWritingObject(noFlags, 2);
-			output.introduceObjectMember(noFlags, "code", 0);
-			output.writeInt(noFlags, int(errorType));
-			output.introduceObjectMember(noFlags, "message", 1);
-			output.writeString(noFlags, message);
-			output.endWritingObject(noFlags);
+			auto errorWritten = output.writeObject(2);
+			errorWritten.writeInt("code",  int(errorType));
+			errorWritten.writeString("message", message);
 		};
 
 		try {

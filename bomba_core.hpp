@@ -122,7 +122,90 @@ struct IStructuredOutput {
 	virtual void startWritingObject(Flags flags, int size) = 0;
 	virtual void introduceObjectMember(Flags flags, std::string_view name, int index) = 0;
 	virtual void endWritingObject(Flags flags) = 0;
+
+	virtual ~IStructuredOutput() = default;
+
+	class ArrayFiller {
+		int _index = 0;
+		IStructuredOutput& _output;
+		static constexpr SerialisationFlags::Flags NoFlags = SerialisationFlags::NONE;
+		ArrayFiller(IStructuredOutput& output, int size) : _output(output) {
+			output.startWritingArray(NoFlags, size);
+		}
+		friend struct IStructuredOutput;
+
+	public:
+		~ArrayFiller() {
+			_output.endWritingArray(NoFlags);
+		}
+
+		void writeInt(int64_t value) { introduceMember().writeInt(NoFlags, value); }
+		void writeFloat(double value) { introduceMember().writeFloat(NoFlags, value); }
+		void writeString(std::string_view value) { introduceMember().writeString(NoFlags, value); }
+		void writeBool(bool value) { introduceMember().writeBool(NoFlags, value); }
+		void writeNull() { introduceMember().writeNull(NoFlags); }
+
+		ArrayFiller writeArray(int size = UNKNOWN_SIZE) {
+			return ArrayFiller(introduceMember(), size);
+		}
+		auto writeObject(int size = UNKNOWN_SIZE);
+		IStructuredOutput& underlyingOutput() {
+			return _output;
+		}
+		IStructuredOutput& introduceMember() {
+			_output.introduceArrayElement(NoFlags, _index);
+			_index++;
+			return _output;
+		}
+	};
+	ArrayFiller writeArray(int size = UNKNOWN_SIZE) {
+		return ArrayFiller(*this, size);
+	}
+
+
+	class ObjectFiller {
+		int _index = 0;
+		IStructuredOutput& _output;
+		static constexpr SerialisationFlags::Flags NoFlags = SerialisationFlags::NONE;
+		ObjectFiller(IStructuredOutput& output, int size) : _output(output) {
+			output.startWritingObject(NoFlags, size);
+		}
+		friend struct IStructuredOutput;
+
+	public:
+		~ObjectFiller() {
+			_output.endWritingObject(NoFlags);
+		}
+
+		void writeInt(std::string_view name, int64_t value) { introduceMember(name).writeInt(NoFlags, value); }
+		void writeFloat(std::string_view name, double value) { introduceMember(name).writeFloat(NoFlags, value); }
+		void writeString(std::string_view name, std::string_view value) { introduceMember(name).writeString(NoFlags, value); }
+		void writeBool(std::string_view name, bool value) { introduceMember(name).writeBool(NoFlags, value); }
+		void writeNull(std::string_view name) { introduceMember(name).writeNull(NoFlags); }
+
+		ArrayFiller writeArray(std::string_view name, int size = UNKNOWN_SIZE) {
+			return ArrayFiller(introduceMember(name), size);
+		}
+		ObjectFiller writeObject(std::string_view name, int size = UNKNOWN_SIZE) {
+			return ObjectFiller(introduceMember(name), size);
+		}
+		IStructuredOutput& underlyingOutput() {
+			return _output;
+		}
+		IStructuredOutput& introduceMember(std::string_view name) {
+			_output.introduceObjectMember(NoFlags, name, _index);
+			_index++;
+			return _output;
+		}
+	};
+	ObjectFiller writeObject(int size = UNKNOWN_SIZE) {
+		return ObjectFiller(*this, size);
+	}
 };
+
+auto IStructuredOutput::ArrayFiller::writeObject(int size) {
+	return ObjectFiller(introduceMember(), size);
+}
 
 struct NullStructredOutput : IStructuredOutput {
 	void writeInt(Flags, int64_t) final override {}

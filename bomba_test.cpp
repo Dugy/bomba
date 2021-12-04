@@ -389,6 +389,24 @@ int main(int argc, char** argv) {
 	}
 
 	{
+		std::cout << "Testing JSON output facade" << std::endl;
+		Bomba::ExpandingBuffer result;
+		JSON::Output out(result);
+		{
+			auto obj = out.writeObject();
+			obj.writeInt("thirteen", 13);
+			obj.writeFloat("twoAndHalf", 2.5);
+			obj.writeBool("no", false);
+			{
+				auto array = obj.writeArray("array");
+				array.writeNull();
+				array.writeString("strink");
+			}
+		}
+		doATest(std::string_view(result), simpleJsonCode);
+	}
+
+	{
 		std::cout << "Testing JSON read" << std::endl;
 		std::string result;
 		JSON::Input in(simpleJsonCode);
@@ -1171,10 +1189,11 @@ R"~({
 	auto printObjectDescription = [&] (const IDescribableSerialisable& printed) {
 		Bomba::ExpandingBuffer written;
 		JSON::Output jsonOutput(written);
-		jsonOutput.startWritingObject(SerialisationFlags::NONE, IStructuredOutput::UNKNOWN_SIZE);
-		JsonWspMembersDescription descriptionGenerator(jsonOutput);
-		printed.describe(descriptionGenerator);
-		jsonOutput.endWritingObject(SerialisationFlags::NONE);
+		{
+			auto description = jsonOutput.writeObject();
+			JsonWspMembersDescription descriptionGenerator(description);
+			printed.describe(descriptionGenerator);
+		}
 		return std::string(written);
 	};
 	
@@ -1194,10 +1213,11 @@ R"~({
 		SuperStandardObject super;
 		Bomba::ExpandingBuffer written2;
 		JSON::Output jsonOutput(written2);
-		jsonOutput.startWritingObject(SerialisationFlags::NONE, IStructuredOutput::UNKNOWN_SIZE);
-		JsonWspTypeDescription description{jsonOutput};
-		super.listTypes(description);
-		jsonOutput.endWritingObject(SerialisationFlags::NONE);
+		{
+			auto outputObject = jsonOutput.writeObject();
+			JsonWspTypeDescription description{outputObject};
+			super.listTypes(description);
+		}
 		doATest(std::string_view(written2), expectedAutomaticSubtypesDescription);
 	}
 	
@@ -1241,7 +1261,7 @@ R"~({
 				"doc_lines" : [],
 				"type" : null
 			}
-		}
+		},
 		"backup.get_message" : {
 			"doc_lines" : [
 				"Gets the stored message"
