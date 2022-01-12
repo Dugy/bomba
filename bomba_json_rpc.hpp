@@ -37,9 +37,8 @@ class JsonRpcServerProtocol : public IHttpPostResponder {
 		constexpr auto noFlags = Json::Output::Flags::NONE;
 		bool failed = false;
 		bool responding = false;
-		IStructuredInput::Location idSeekingStartpoint;
-
-		input.startReadingObject(noFlags);
+		IStructuredInput::Location paramsPosition;
+		bool idWritten = false;
 
 		auto writeId = [&] {
 			responding = true;
@@ -64,19 +63,8 @@ class JsonRpcServerProtocol : public IHttpPostResponder {
 				output.writeNull(noFlags);
 			}
 		};
-		auto checkIdExistence = [&] {
-			if (!responding && idSeekingStartpoint.loc != IStructuredInput::Location::UNINITIALISED) {
-				auto originalPosition = input.storePosition(noFlags);
-				input.restorePosition(noFlags, idSeekingStartpoint);
-				if (input.seekObjectElement(noFlags, "id", true)) {
-					writeId();
-				}
-				input.restorePosition(noFlags, originalPosition);
-			}
-		};
 		auto introduceError = [&] (std::string_view message, JsonRpcError errorType = JsonRpcError::INTERNAL_ERROR) {
 			failed = true;
-			checkIdExistence();
 			if (!responding)
 				return;
 
@@ -87,75 +75,79 @@ class JsonRpcServerProtocol : public IHttpPostResponder {
 		};
 
 		try {
-			std::optional<std::string_view> nextName;
 			const IRemoteCallable* method = nullptr;
 			bool called = false;
-			auto call = [&] (IStructuredInput* inputSelected) {
+			auto call = [&] () {
 				auto introduceResult = [&] () {
 					if (responding)
 						output.introduceObjectMember(noFlags, "result", 2);
 				};
+				auto formerPosition = input.storePosition(noFlags);
 				if (method) [[likely]] {
 					called = true; // If it throws, it's still considered called
-					checkIdExistence();
+					if (paramsPosition) {
+						input.restorePosition(noFlags, paramsPosition);
+					}
 					if (responding)
-						method->call(inputSelected, output, introduceResult, introduceError);
+						method->call(paramsPosition ? &input : nullptr, output, introduceResult, introduceError);
 					else {
 						NullStructredOutput nullOutput;
-						method->call(inputSelected, nullOutput, introduceResult, introduceError);
+						method->call(paramsPosition ? &input : nullptr, nullOutput, introduceResult, introduceError);
 					}
-				} else input.skipObjectElement(noFlags);
-			};
-			auto readMethod = [&] () {
-				auto path = input.readString(noFlags);
-				method = PathWithSeparator<".", LocalStringType>::findCallable(path, &_callable);
-				if (!method) {
-					introduceError("Method not known", JsonRpcError::METHOD_NOT_FOUND);
 				}
+				return formerPosition;
 			};
 
-			while ((nextName = input.nextObjectElement(noFlags)) && !failed) {
+			// The logic that must be upheld:
+			// * every loop advances by 1 entry (if position is modified, it must be restored)
+			// * finding id starts the response, finding params stores their position and finding method causes its lookup
+			// * it's called immediately when method, params and id are all known
+			// * if something is missing, it's called after the loop
+			input.readObject(noFlags, [&] (std::optional<std::string_view> nextName, int) {
 				if (*nextName == "jsonrpc") {
-					idSeekingStartpoint = input.storePosition(noFlags);
-					if (input.readString(noFlags) != "2.0") {
+					if (input.readString(noFlags) != "2.0") [[unlikely]] {
 						introduceError("Unknown JSON-RPC version", JsonRpcError::INVALID_REQUEST);
-						break;
+						return false;
 					}
 				} else if (*nextName == "id") {
 					if (!called) {
 						writeId();
+						if (method && paramsPosition) {
+							input.restorePosition(noFlags, call());
+						}
 					} else
 						input.skipObjectElement(noFlags);
 				} else if (*nextName == "method") {
 					if (!method) {
-						idSeekingStartpoint = input.storePosition(noFlags);
-						readMethod();
+						auto path = input.readString(noFlags);
+						method = PathWithSeparator<".", LocalStringType>::findCallable(path, &_callable);
+						if (!method) [[unlikely]] {
+							introduceError("Method not known", JsonRpcError::METHOD_NOT_FOUND);
+						}
+						if (responding && paramsPosition) {
+							input.restorePosition(noFlags, call());
+						}
 					} else
 						input.skipObjectElement(noFlags);
 				} else if (*nextName == "params") {
-					idSeekingStartpoint = input.storePosition(noFlags);
-					if (!method) {
-						auto paramsPosition = input.storePosition(noFlags);
-						if (input.seekObjectElement(noFlags, "method", true)) {
-							readMethod();
-							input.restorePosition(noFlags, paramsPosition);
-							call(&input);
-						} else {
-							input.restorePosition(noFlags, paramsPosition);
-							introduceError("Method name not found in the request", JsonRpcError::INVALID_REQUEST);
-						}
+					paramsPosition = input.storePosition(noFlags);
+					if (method && responding) {
+						call();
 					} else {
-						call(&input);
+						input.skipObjectElement(noFlags);
 					}
-				} else {
+				} else [[unlikely]] {
 					introduceError("Unexpected member in request", JsonRpcError::INVALID_REQUEST);
-					break;
+					return false;
 				}
-			}
+				return !failed;
+			});
 			if (!failed && !called) {
-				call(nullptr);
+				if (!method) [[unlikely]] {
+					introduceError("Method name not found in request", JsonRpcError::METHOD_NOT_FOUND);
+				}
+				input.restorePosition(noFlags, call());
 			}
-			input.endReadingObject(noFlags);
 		} catch (ParseError& e) {
 			introduceError(e.what(), JsonRpcError::PARSE_ERROR);
 		} catch (RemoteError& e) {
@@ -263,40 +255,44 @@ public:
 			if (!success)
 				return false;
 			typename Json::Input input(std::string_view(message.data(), message.size()));
-			input.startReadingObject(noFlags);
-			std::optional<std::string_view> nextName;
-			while ((nextName = input.nextObjectElement(noFlags))) {
+			bool okay = true;
+			auto fail = [&okay] (std::string_view problem) {
+				parseError(problem);
+				okay = false;
+			};
+			input.readObject(noFlags, [&] (std::optional<std::string_view> nextName, int) {
 				if (*nextName == "jsonrpc") {
 					if (input.readString(noFlags) != "2.0") {
-						parseError("Unknown JSON-RPC version");
+						fail("Unknown JSON-RPC version");
 						return false;
 					}
 				} else if (*nextName == "id") {
 					if (input.readInt(noFlags) != token.id) {
-						parseError("Out of order response");
+						fail("Out of order response");
 					}
 				} else if (*nextName == "error") {
-					input.startReadingObject(noFlags);
-					std::optional<std::string_view> nextErrorElement;
-					while ((nextErrorElement = input.nextObjectElement(noFlags))) {
+					input.readObject(noFlags, [&] (std::optional<std::string_view> nextErrorElement, int) {
 						if (*nextErrorElement == "message") {
 							std::string_view message = input.readString(noFlags);
 							remoteError(message);
+							okay = false;
 							return false;
 						} else input.skipObjectElement(noFlags);
-					}
+						return true;
+					});
 					remoteError("Call failed");
+					okay = false;
 					return false;
 				} else if (*nextName == "result") {
 					reader(input);
 				} else {
-					parseError("Unknown toplevel element");
+					fail("Unknown toplevel element");
 					return false;
 				}
-			}
-			input.endReadingObject(noFlags);
+				return true;
+			});
 			retval = input.good;
-			return true;
+			return okay;
 		});
 		return retval;
 	}

@@ -96,7 +96,9 @@ std::string written = point.serialise<Bomba::BasicJson<>>();
 point.deserialise<Bomba::BasicJson<>>(reading);
 ```
 
-To use different internal type than `std::string` for unescaping strings, set it as template argument. More on this is [here](#custom-string-type). To append the result of `serialise()` to an existing string, use its overload that accepts a reference to the output as argument. The output type is set by the second template argument, which defaults to the type of the first argument.
+The first template argument sets the data format. `BasicJson<>` makes it JSON. `BinaryProtocol<>` makes it binary, similar to reinterpret casting to pragmapacked structures, but handling dynamically sized structures like strings (header `bomba_binary_protocol.hpp`).
+
+To use different internal type than `std::string` for unescaping strings, set it as a second template argument. More on this is [here](#custom-string-type). To append the result of `serialise()` to an existing string, use its overload that accepts a reference to the output as argument. The output type is set by the second template argument, which defaults to the type of the first argument.
 
 ### Remote Procedure Call
 You can define an RPC function by declaring this:

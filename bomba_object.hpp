@@ -123,7 +123,7 @@ template <typename Child, int Index = 0, typename SFINAE = void>
 struct ObjectInfo {
 	static void serialise(IStructuredOutput& out, const ISerialisable* parent, SerialisationFlags::Flags flags) {}
 	static void deserialise(IStructuredInput& in, ISerialisable* parent,
-				SerialisationFlags::Flags flags, std::string_view memberName) {
+				SerialisationFlags::Flags flags, std::optional<std::string_view> memberName, int index) {
 		in.skipObjectElement(flags);
 	}
 	static void describe(IPropertyDescriptionFiller&) {}
@@ -146,12 +146,12 @@ struct ObjectInfo<Child, Index, std::enable_if_t<
 		ObjectInfo<Child, Index + 1, void>::serialise(out, parent, flags);
 	}
 	static void deserialise(IStructuredInput& in, ISerialisable* parent,
-				SerialisationFlags::Flags flags, std::string_view memberName) {
-		if (memberName == name(store))
+				SerialisationFlags::Flags flags, std::optional<std::string_view> memberName, int index) {
+		if ((memberName.has_value() && *memberName == name(store)) || (!memberName.has_value() && index == Index))
 			deserialiser(store)(in, parent, getOffsets()[Index],
 					SerialisationFlags::Flags(flags | memberFlags(store)));
 		else
-			ObjectInfo<Child, Index + 1, void>::deserialise(in, parent, flags, memberName);
+			ObjectInfo<Child, Index + 1, void>::deserialise(in, parent, flags, memberName, index);
 	}
 	static void describe(IPropertyDescriptionFiller& filler) {
 		describer(store)(filler);
@@ -332,7 +332,7 @@ class Serialisable : public IDescribableSerialisable {
 				SerialisationSetupData& info = *Serialisable::_setupInstance;
 
 #ifdef NO_DEFECT_REPORT_2118
-				if (int(info.elements.size()) < info.index + 1)
+				if (std::ssize(info.elements) < info.index + 1)
 					info.elements.emplace_back();
 #endif
 				
@@ -389,37 +389,43 @@ protected:
 	void serialiseInternal(IStructuredOutput& format,
 			SerialisationFlags::Flags flags) const override {
 #ifdef NO_DEFECT_REPORT_2118
-		format.startWritingObject(flags, _setup.size());
-		for (int i = 0; i < int(_setup.size()); i++) {
+		format.startWritingObject(SerialisationFlags::Flags(flags | SerialisationFlags::OBJECT_LAYOUT_KNOWN), _setup.size());
+		for (int i = 0; i < std::ssize(setup); i++) {
 			_setup[i].serialiser(format, this, i, _setup[i].offset,
-					SerialisationFlags::Flags(flags | _setup[i].flags));
+					SerialisationFlags::Flags(flags | _setup[i].flags | SerialisationFlags::OBJECT_LAYOUT_KNOWN));
 		}
 #else
-		format.startWritingObject(flags, ObjectInfo<Child>::size);
-		ObjectInfo<Child>::serialise(format, this, flags);
+		format.startWritingObject(SerialisationFlags::Flags(flags | SerialisationFlags::OBJECT_LAYOUT_KNOWN), ObjectInfo<Child>::size);
+		ObjectInfo<Child>::serialise(format, this, SerialisationFlags::Flags(flags | SerialisationFlags::OBJECT_LAYOUT_KNOWN));
 #endif
 		format.endWritingObject(flags);
 	}
 	bool deserialiseInternal(IStructuredInput& format,
 			SerialisationFlags::Flags flags) override {
-		format.startReadingObject(flags);
-		std::optional<std::string_view> name;
-		while ((name = format.nextObjectElement(flags))) {
+		format.readObject(SerialisationFlags::Flags(flags | SerialisationFlags::OBJECT_LAYOUT_KNOWN),
+					[&] (std::optional<std::string_view> name, int index) {
 #ifdef NO_DEFECT_REPORT_2118
-			for (int i = 0; i < int(_setup.size()); i++) {
-				if (_setup[i].name == name) {
-					_setup[i].deserialiser(format, this, _setup[i].offset,
-							SerialisationFlags::Flags(flags | _setup[i].flags));
-					goto found;
+			if (name.has_value()) {
+				for (int i = 0; i < std::ssize(setup); i++) {
+					if (_setup[i].name == name) {
+						_setup[i].deserialiser(format, this, _setup[i].offset,
+											   SerialisationFlags::Flags(flags | _setup[i].flags));
+						goto found;
+					}
 				}
+				format.skipObjectElement(flags);
+				found:;
+				return true;
+			} else {
+				_setup[index].deserialiser(format, this, _setup[index].offset,
+									   SerialisationFlags::Flags(flags | _setup[index].flags));
+				return (index < _setup.size() - 1); // If there is a next element
 			}
-			format.skipObjectElement(flags);
-			found:;
 #else
-			ObjectInfo<Child>::deserialise(format, this, flags, *name);
+			ObjectInfo<Child>::deserialise(format, this, flags, name, index);
+			return (index < ObjectInfo<Child>::size - 1); // True if not the last one
 #endif
-		}
-		format.endReadingObject(flags);
+		});
 		return format.good;
 	}
 
@@ -444,7 +450,7 @@ protected:
 public:
 	void describe(IPropertyDescriptionFiller& filler) const override {
 #ifdef NO_DEFECT_REPORT_2118
-			for (int i = 0; i < int(_setup.size()); i++) {
+			for (int i = 0; i < std::ssize(setup); i++) {
 				_setup[i].describer(filler);
 			}
 #else
@@ -462,7 +468,7 @@ public:
 	}
 	void listTypes(ISerialisableDescriptionFiller& filler) const override {
 #ifdef NO_DEFECT_REPORT_2118
-			for (int i = 0; i < int(_setup.size()); i++) {
+			for (int i = 0; i < std::ssize(setup); i++) {
 				_setup[i].typeLister(filler);
 			}
 #else

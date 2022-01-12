@@ -11,6 +11,7 @@
 #include "bomba_sync_client.hpp"
 #include "bomba_json_wsp_description.hpp"
 #include "bomba_dynamic_object.hpp"
+#include "bomba_binary_protocol.hpp"
 #include <string>
 #include <map>
 #include <memory>
@@ -40,10 +41,12 @@ struct DummyObject : public IDescribableSerialisable {
 		order++;
 	}
 	template <typename T>
-	void readMember(IStructuredInput& format, std::string name, T& member) {
-		auto got = format.nextObjectElement(noFlags);
-		if (*got != name)
-			throw ParseError("Expected " + name);
+	void readMember(IStructuredInput& format, std::optional<std::string_view> name,
+					std::string expectedName, T& member, int index, int expectedIndex) {
+		if (index != expectedIndex)
+			return;
+		if (!name.has_value() || *name != expectedName)
+			throw ParseError("Expected " + expectedName);
 		TypedSerialiser<T>::deserialiseMember(format, member, noFlags);
 	}
 
@@ -61,16 +64,17 @@ struct DummyObject : public IDescribableSerialisable {
 		format.endWritingObject(noFlags);
 	}
 	bool deserialiseInternal(IStructuredInput& format, SerialisationFlags::Flags) override {
-		format.startReadingObject(noFlags);
-		readMember(format, "edges", edges);
-		readMember(format, "isRed", isRed);
-		readMember(format, "name", name);
-		readMember(format, "edgeSizes", edgeSizes);
-		readMember(format, "ticks", ticks);
-		readMember(format, "tags", tags);
-		readMember(format, "notes", notes);
-		readMember(format, "story", story);
-		format.endReadingObject(noFlags);
+		format.readObject(noFlags, [&] (std::optional<std::string_view> elementName, int index) {
+			readMember(format, elementName, "edges", edges, index, 0);
+			readMember(format, elementName, "isRed", isRed, index, 1);
+			readMember(format, elementName,"name",  name, index, 2);
+			readMember(format, elementName, "edgeSizes", edgeSizes, index, 3);
+			readMember(format, elementName, "ticks", ticks, index, 4);
+			readMember(format, elementName, "tags", tags, index, 5);
+			readMember(format, elementName, "notes", notes, index, 6);
+			readMember(format, elementName, "story", story, index, 7);
+			return true;
+		});
 		return true;
 	}
 	void describe(IPropertyDescriptionFiller& filler) const override {
@@ -115,8 +119,9 @@ struct DummyRpcClass : IRemoteCallable {
 		bool call(IStructuredInput* arguments, IStructuredOutput& result, Callback<> introduceResult,
 				Callback<void(std::string_view)>, std::optional<UserId>) const final override {
 			if (arguments) {
-				arguments->startReadingObject(noFlags);
-				arguments->endReadingObject(noFlags);
+				arguments->readObject(noFlags, [&] (std::optional<std::string_view>, int) {
+					arguments->skipObjectElement(noFlags); return true;
+				});
 			}
 			introduceResult();
 			result.writeString(noFlags, static_cast<DummyRpcClass*>(parent())->message);
@@ -151,17 +156,15 @@ struct DummyRpcClass : IRemoteCallable {
 				methodNotFoundError("Expected params");
 				return false;
 			}
-			arguments->startReadingObject(noFlags);
-			std::optional<std::string_view> name;
 			bool found = false;
-			while ((name = arguments->nextObjectElement(noFlags))) {
+			arguments->readObject(noFlags, [&] (std::optional<std::string_view> name, int) {
 				if (*name == "new_time") {
 					static_cast<DummyRpcClass*>(parent())->time =
 							arguments->readInt(noFlags);
 					found = true;
 				}
-			}
-			arguments->endReadingObject(noFlags);
+				return !found;
+			});
 			if (!found) {
 				parseError("Missing mandatory argument");
 			}
@@ -319,6 +322,21 @@ struct FakeServer {
 	}
 };
 
+struct ManualBinary {
+	std::string str;
+	template <typename T>
+	void add(T added) {
+		std::array<char, sizeof(T)> bytes;
+		memcpy(bytes.data(), &added, sizeof(bytes));
+		str.insert(str.end(), bytes.begin(), bytes.end());
+	}
+	template <typename SizeType = uint16_t>
+	void addString(std::string_view appended) {
+		add(SizeType(appended.size()));
+		str.append(appended);
+	}
+};
+
 int main(int argc, char** argv) {
 
 	int errors = 0;
@@ -327,7 +345,8 @@ int main(int argc, char** argv) {
 	auto doATest = [&] (auto is, auto shouldBe) {
 		tests++;
 		if constexpr(std::is_floating_point_v<decltype(is)>) {
-			if (is > shouldBe * 1.0001 || is < shouldBe * 0.9999) {
+			if ((is > 0 && (is > shouldBe * 1.0001 || is < shouldBe * 0.9999)) ||
+					(is < 0 && (is < shouldBe * 1.0001 || is > shouldBe * 0.9999))) {
 				errors++;
 				std::cout << "Test failed: " << is << " instead of " << shouldBe << std::endl;
 			}
@@ -343,14 +362,29 @@ int main(int argc, char** argv) {
 		auto isWhitespace = [] (char letter) {
 			return letter == ' ' || letter == '\t' || letter == '\n' || letter == '\r';
 		};
-		for (int i = 0, j = 0; i < int(is.size()) && j < int(shouldBe.size()); i++, j++) {
-			while (isWhitespace(is[i]) && i < int(is.size())) i++;
-			while (isWhitespace(shouldBe[j]) && j < int(shouldBe.size())) j++;
-			if ((i >= int(is.size())) != (j >= int(shouldBe.size())) || is[i] != shouldBe[j]) {
+		for (int i = 0, j = 0; i < std::ssize(is) && j < std::ssize(shouldBe); i++, j++) {
+			while (isWhitespace(is[i]) && i < std::ssize(is)) i++;
+			while (isWhitespace(shouldBe[j]) && j < std::ssize(shouldBe)) j++;
+			if ((i >= std::ssize(is)) != (j >= std::ssize(shouldBe)) || is[i] != shouldBe[j]) {
 				errors++;
 				std::cout << "Test failed: " << is << " instead of " << shouldBe << std::endl;
 				break;
 			}
+		}
+	};
+	auto doATestBinary = [&] (auto is, auto shouldBe) {
+		tests++;
+		if (is != shouldBe) {
+			errors++;
+			std::cout << "Test failed: " << std::endl;
+			for (auto it : is) {
+				std::cout << int(it) << ' ';
+			}
+			std::cout << std::endl << "instead of" << std::endl;
+			for (auto it : shouldBe) {
+				std::cout << int(it) << ' ';
+			}
+			std::cout << std::endl;
 		}
 	};
 
@@ -412,51 +446,55 @@ int main(int argc, char** argv) {
 		JSON::Input in(simpleJsonCode);
 
 		doATest(in.identifyType(noFlags), IStructuredInput::TYPE_OBJECT);
-		in.startReadingObject(noFlags);
-		doATest(in.good, true);
 
-		std::cout << "Testing JSON read int" << std::endl;
-		doATest(*in.nextObjectElement(noFlags), "thirteen");
-		doATest(in.identifyType(noFlags), IStructuredInput::TYPE_INTEGER);
-		doATest(in.readInt(noFlags), 13);
-		doATest(in.good, true);
+		int realIndex = 0;
+		in.readObject(noFlags, [&] (std::optional<std::string_view> name, int index) {
+			doATest(realIndex, index);
+			realIndex++;
+			if (index == 0) {
+				std::cout << "Testing JSON read int" << std::endl;
+				doATest(*name, "thirteen");
+				doATest(in.identifyType(noFlags), IStructuredInput::TYPE_INTEGER);
+				doATest(in.readInt(noFlags), 13);
+				doATest(in.good, true);
+			} else if (index == 1) {
+				std::cout << "Testing JSON read float" << std::endl;
+				doATest(*name, "twoAndHalf");
+				doATest(in.identifyType(noFlags), IStructuredInput::TYPE_FLOAT);
+				doATest(in.readFloat(noFlags), 2.5);
+				doATest(in.good, true);
+			} else if (index == 2) {
+				std::cout << "Testing JSON read bool" << std::endl;
+				doATest(*name, "no");
+				doATest(in.identifyType(noFlags), IStructuredInput::TYPE_BOOLEAN);
+				doATest(in.readBool(noFlags), false);
+				doATest(in.good, true);
+			} else if (index == 3) {
+				std::cout << "Testing JSON read array" << std::endl;
+				doATest(*name, "array");
+				doATest(in.identifyType(noFlags), IStructuredInput::TYPE_ARRAY);
+				in.startReadingArray(noFlags);
+				doATest(in.good, true);
 
-		std::cout << "Testing JSON read float" << std::endl;
-		doATest(*in.nextObjectElement(noFlags), "twoAndHalf");
-		doATest(in.identifyType(noFlags), IStructuredInput::TYPE_FLOAT);
-		doATest(in.readFloat(noFlags), 2.5);
-		doATest(in.good, true);
+				std::cout << "Testing JSON read null" << std::endl;
+				doATest(in.nextArrayElement(noFlags), true);
+				doATest(in.identifyType(noFlags), IStructuredInput::TYPE_NULL);
+				in.readNull(noFlags);
+				doATest(in.good, true);
 
-		std::cout << "Testing JSON read bool" << std::endl;
-		doATest(*in.nextObjectElement(noFlags), "no");
-		doATest(in.identifyType(noFlags), IStructuredInput::TYPE_BOOLEAN);
-		doATest(in.readBool(noFlags), false);
-		doATest(in.good, true);
+				std::cout << "Testing JSON read string" << std::endl;
+				doATest(in.nextArrayElement(noFlags), true);
+				doATest(in.identifyType(noFlags), IStructuredInput::TYPE_STRING);
+				doATest(in.readString(noFlags), "strink");
+				doATest(in.good, true);
 
-		std::cout << "Testing JSON read array" << std::endl;
-		doATest(*in.nextObjectElement(noFlags), "array");
-		doATest(in.identifyType(noFlags), IStructuredInput::TYPE_ARRAY);
-		in.startReadingArray(noFlags);
-		doATest(in.good, true);
-
-		std::cout << "Testing JSON read null" << std::endl;
-		doATest(in.nextArrayElement(noFlags), true);
-		doATest(in.identifyType(noFlags), IStructuredInput::TYPE_NULL);
-		in.readNull(noFlags);
-		doATest(in.good, true);
-
-		std::cout << "Testing JSON read string" << std::endl;
-		doATest(in.nextArrayElement(noFlags), true);
-		doATest(in.identifyType(noFlags), IStructuredInput::TYPE_STRING);
-		doATest(in.readString(noFlags), "strink");
-		doATest(in.good, true);
-
-		std::cout << "Testing JSON read end" << std::endl;
-		doATest(in.nextArrayElement(noFlags), false);
-		in.endReadingArray(noFlags);
-		doATest(in.good, true);
-		doATest(in.nextObjectElement(noFlags) == std::nullopt, true);
-		in.endReadingObject(noFlags);
+				std::cout << "Testing JSON read end" << std::endl;
+				doATest(in.nextArrayElement(noFlags), false);
+				in.endReadingArray(noFlags);
+				doATest(in.good, true);
+			}
+			return true;
+		});
 		doATest(in.good, true);
 	}
 
@@ -487,19 +525,24 @@ int main(int argc, char** argv) {
 		std::cout << "Testing JSON skipping" << std::endl;
 		std::string result;
 		JSON::Input in(dummyObjectJson);
-		in.startReadingObject(noFlags);
-
-		auto start = in.storePosition(noFlags);
-		for (int i = 0; i < 7; i++) {
-			in.nextObjectElement(noFlags);
-			in.skipObjectElement(noFlags);
-		}
-		doATest(*in.nextObjectElement(noFlags), "story");
-		doATest(in.identifyType(noFlags), IStructuredInput::TYPE_NULL);
 		doATest(in.good, true);
 
+		auto start = in.storePosition(noFlags);
+		in.readObject(noFlags, [&] (std::optional<std::string_view> name, int index) {
+			if (index == 7) {
+				doATest(*name, "story");
+				doATest(in.identifyType(noFlags), IStructuredInput::TYPE_NULL);
+			}
+			in.skipObjectElement(noFlags);
+			doATest(in.good, true);
+			return true;
+		});
+
 		in.restorePosition(noFlags, start);
-		doATest(*in.nextObjectElement(noFlags), "edges");
+		in.readObject(noFlags, [&] (std::optional<std::string_view> name, int) {
+			doATest(*name, "edges");
+			return false;
+		});
 		doATest(in.good, true);
 	}
 
@@ -1456,7 +1499,174 @@ R"~({
 		doATest(std::string_view(writeStarter2.buffer), alternateAdvancedRequest2Response2);
 	}
 
+	{
+		std::cout << "Testing binary format write" << std::endl;
+		ManualBinary expected;
+		std::string output;
+		BinaryProtocol<>::Output out(output);
 
+		out.writeBool(noFlags, true);
+		expected.add(true);
+		out.writeInt(SerialisationFlags::UINT_16, 33333);
+		expected.add(uint16_t(33333));
+		out.writeInt(SerialisationFlags::INT_64, -1);
+		expected.add(int64_t(-1));
+		out.writeFloat(SerialisationFlags::FLOAT_32, 1.53);
+		expected.add(float(1.53));
+		std::string testString = "There is a meaning behind these numbers";
+		out.writeString(noFlags, testString);
+		expected.addString(testString);
+		doATestBinary(output, expected.str);
+	}
+
+	{
+		std::cout << "Testing binary format write structured" << std::endl;
+		ManualBinary expected;
+		std::string output;
+
+		BinaryProtocol<>::Output out(output);
+		{
+			auto writer = out.writeArray(2);
+			expected.add(int16_t(2));
+			writer.writeBool(true);
+			expected.add(true);
+			writer.writeBool(false);
+			expected.add(false);
+		}
+
+		{
+			auto writer = out.writeObject(2);
+			expected.add(int16_t(2));
+			writer.writeInt("a", 1);
+			expected.addString("a");
+			expected.add(1);
+
+			writer.writeInt("b", 2);
+			expected.addString("b");
+			expected.add(2);
+		}
+
+		out.startWritingObject(SerialisationFlags::OBJECT_LAYOUT_KNOWN, 2);
+		out.introduceObjectMember(SerialisationFlags::OBJECT_LAYOUT_KNOWN, "a", 0);
+		out.writeInt(noFlags, 1);
+		expected.add(1);
+		out.introduceObjectMember(SerialisationFlags::OBJECT_LAYOUT_KNOWN, "b", 1);
+		out.writeInt(noFlags, 2);
+		expected.add(2);
+		out.endWritingObject(SerialisationFlags::OBJECT_LAYOUT_KNOWN);
+
+		doATestBinary(output, expected.str);
+	}
+
+	{
+		std::cout << "Testing binary format write high level" << std::endl;
+		ManualBinary expected;
+
+		StandardObject obj;
+		expected.add(3);
+		expected.add(static_cast<short int>(7));
+		expected.add(true);
+		expected.addString(obj.contents);
+
+		std::string output = obj.serialise<BinaryProtocol<>>();
+		doATestBinary(output, expected.str);
+	}
+
+	{
+		std::cout << "Testing binary format read" << std::endl;
+		ManualBinary reading;
+		reading.add(false);
+		reading.add(int8_t(-9));
+		reading.add(int32_t(-444));
+		reading.add(int64_t(4325));
+		reading.add(float(3.5));
+		constexpr std::string_view testString = "It confirms my biases!";
+		reading.addString(testString);
+
+		BinaryProtocol<>::Input in(reading.str);
+		doATest(in.readBool(noFlags), false);
+		doATest(in.readInt(SerialisationFlags::INT_8), -9);
+		doATest(in.readInt(SerialisationFlags::INT_32), -444);
+		doATest(in.readInt(SerialisationFlags::INT_64), 4325);
+		doATest(in.readFloat(SerialisationFlags::FLOAT_32), 3.5);
+		doATest(in.readString(noFlags), testString);
+		doATest(in.good, true);
+	}
+
+	{
+		std::cout << "Testing binary format read structured" << std::endl;
+		ManualBinary reading;
+		reading.add(uint16_t(3));
+		reading.add(int8_t(-7));
+		reading.add(int8_t(-3));
+		reading.add(int8_t(9));
+		reading.add(uint16_t(2));
+		reading.addString("+");
+		reading.add(int64_t(82));
+		reading.addString("-");
+		reading.add(float(-23.27));
+		constexpr std::string_view testString = "ABCDEFSorosGates5G";
+		reading.addString(testString);
+		reading.add(int32_t(182));
+
+		BinaryProtocol<>::Input in(reading.str);
+		in.startReadingArray(noFlags);
+		doATest(in.readInt(SerialisationFlags::INT_8), -7);
+		doATest(in.nextArrayElement(noFlags), true);
+		doATest(in.readInt(SerialisationFlags::INT_8), -3);
+		doATest(in.nextArrayElement(noFlags), true);
+		doATest(in.readInt(SerialisationFlags::INT_8), 9);
+		doATest(in.nextArrayElement(noFlags), false);
+		in.endReadingArray(noFlags);
+
+		in.readObject(noFlags, [&] (std::optional<std::string_view> name, int index) {
+			if (index == 0) {
+				doATest(name.has_value(), true);
+				doATest(*name, "+");
+				doATest(in.readInt(SerialisationFlags::INT_64), 82);
+			} else if (index == 1) {
+				doATest(name.has_value(), true);
+				doATest(*name, "-");
+				doATest(in.readFloat(SerialisationFlags::FLOAT_32), -23.27);
+			} else {
+				std::cout << "Error, wasn't supposed to iterate more than twice" << std::endl;
+				errors++;
+				return false;
+			}
+			return true;
+		});
+
+		in.readObject(SerialisationFlags::OBJECT_LAYOUT_KNOWN, [&] (std::optional<std::string_view> name, int index) {
+			if (index == 0) {
+				doATest(name.has_value(), false);
+				doATest(in.readString(noFlags), testString);
+			} else if (index == 1) {
+				doATest(name.has_value(), false);
+				doATest(in.readInt(SerialisationFlags::INT_32), 182);
+			} else
+				return false;
+			return true;
+		});
+		doATest(in.good, true);
+	}
+
+	{
+		std::cout << "Testing binary format read high level" << std::endl;
+		ManualBinary reading;
+
+		StandardObject obj;
+		reading.add(9);
+		reading.add(static_cast<short int>(12));
+		reading.add(false);
+		reading.addString(obj.contents);
+		obj.contents = "This is so wrong";
+
+		obj.deserialise<BinaryProtocol<>>(reading.str);
+		doATest(obj.index, 9);
+		doATest(obj.subIndex, 12);
+		doATest(obj.deleted, false);
+		doATest(obj.contents, StandardObject().contents);
+	}
 
 	std::cout << "Passed: " << (tests - errors) << " / " << tests << ", errors: " << errors << std::endl;
 

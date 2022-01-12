@@ -86,7 +86,7 @@ public:
 		if (!_longLeftovers.empty() && previousReadStart != _keptStart) [[unlikely]] {
 			// Something was read successfully
 			int left = _longLeftovers.size() - _keptStart;
-			if (left > int(_responseArray.size())) {
+			if (left > std::ssize(_responseArray)) {
 				_longLeftovers.erase(_longLeftovers.begin(), _longLeftovers.begin() + _keptStart);
 				_keptEnd = left;
 				_keptStart = 0;
@@ -224,7 +224,7 @@ class TcpServer {
 
 	void destroySession(int index) {
 		std::lock_guard lock(_sessionsLock);
-		if (index < int(_sessions.size()) - 1) [[likely]] {
+		if (index < std::ssize(_sessions) - 1) [[likely]] {
 			_sessions.back()->_index = index;
 			std::swap(_sessions[index], _sessions.back());
 		}

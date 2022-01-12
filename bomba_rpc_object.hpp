@@ -374,16 +374,18 @@ struct RpcLambdaInformationHolder {
 		inline static Detail::RpcArgumentInfo* argumentInfo = makeArgumentInfo();
 
 		template <int ArgIndex = 0>
-		static void setArg(std::string_view name, ArgsTuple& args, IStructuredInput& in, SerialisationFlags::Flags flags) {
+		static void setArg(std::optional<std::string_view> name, ArgsTuple& args,
+						IStructuredInput& in, int index, SerialisationFlags::Flags flags) {
 			constexpr int Index = usesParent() ? ArgIndex - 1 : ArgIndex;
 			if constexpr(ArgIndex >= argsSize) {
 				return;
 			} else {
-				if (name == argumentInfo[Index].name)
+				if ((name.has_value() && *name == argumentInfo[Index].name) || (!name.has_value() && Index == index))
 					TypedSerialiser<std::decay_t<decltype(std::get<ArgIndex>(args))>>::deserialiseMember(
-							in, std::get<ArgIndex>(args), SerialisationFlags::Flags(flags | argumentInfo[Index].flags));
+							in, std::get<ArgIndex>(args), SerialisationFlags::Flags(
+										flags | argumentInfo[Index].flags | SerialisationFlags::OBJECT_LAYOUT_KNOWN));
 				else
-					setArg<ArgIndex + 1>(name, args, in, SerialisationFlags::Flags(flags | argumentInfo[Index].flags));
+					setArg<ArgIndex + 1>(name, args, in, index, SerialisationFlags::Flags(flags));
 			}
 		}
 
@@ -403,16 +405,15 @@ struct RpcLambdaInformationHolder {
 			}
 
 			if (arguments) {
-				arguments->startReadingObject(Flags);
-				std::optional<std::string_view> nextName;
-				while ((nextName = arguments->nextObjectElement(Flags))) {
+				arguments->readObject(SerialisationFlags::Flags(Flags | SerialisationFlags::OBJECT_LAYOUT_KNOWN),
+									  [&] (std::optional<std::string_view> nextName, int index) {
 					if constexpr(usesParent()) {
-						setArg<1>(*nextName, input, *arguments, Flags);
+						setArg<1>(nextName, input, *arguments, index, Flags);
 					} else {
-						setArg<0>(*nextName, input, *arguments, Flags);
+						setArg<0>(nextName, input, *arguments, index, Flags);
 					}
-				}
-				arguments->endReadingObject(Flags);
+					return true;
+				});
 			}
 
 			if constexpr(std::is_same_v<Returned, void>) {

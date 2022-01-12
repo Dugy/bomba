@@ -194,20 +194,26 @@ struct BasicJson {
 			getChar();
 		}
 		
-		void startReadingObject(Flags flags) final override {
+
+		virtual void readObject(Flags flags, Callback<bool(std::optional<std::string_view> memberName, int index)> onEach) {
 			eatWhitespace();
 			char readingChar = getChar();
 			if (readingChar != '{')
 				fail("Expected JSON object");
-		}
-		std::optional<std::string_view> nextObjectElement(Flags flags) final override {
-			eatWhitespace();
-			if (peekChar() != '}') {
-				return readString(flags);
+
+			for (int index = 0; true; index++) {
+				eatWhitespace();
+				if (peekChar() != '}') {
+					if (!onEach(readString(flags), index))
+						break;
+				} else
+					break;
 			}
-			return std::nullopt;
+
+			eatWhitespace();
+			getChar();
 		}
-		void skipObjectElement(Flags flags) final override {
+		void skipObjectElement(Flags) final override {
 			eatWhitespace();
 			int depth = 0;
 			do {
@@ -233,16 +239,11 @@ struct BasicJson {
 				}
 			} while (_contents.begin() + _position < _contents.end());
 		}
-		void endReadingObject(Flags flags) final override {
-			eatWhitespace();
-			getChar();
-		}
-		
 
-		Location storePosition(Flags flags) final override {
+		Location storePosition(Flags) final override {
 			return Location{ _position };
 		}
-		void restorePosition(Flags flags, Location location) final override {
+		void restorePosition(Flags, Location location) final override {
 			_position = location.loc;
 		}
 	};

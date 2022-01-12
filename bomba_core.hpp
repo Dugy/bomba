@@ -1,4 +1,4 @@
-#ifndef BOMBA_CORE
+﻿#ifndef BOMBA_CORE
 #define BOMBA_CORE
 #include <optional>
 #include <array>
@@ -90,6 +90,18 @@ auto makeRaiiContainer(Resource&& resource, Destruction&& destruction) {
 	return RaiiContainer(std::move(resource), std::move(destruction));
 }
 
+struct Float16Placeholder {
+	uint16_t data;
+	Float16Placeholder& operator=(float value) {
+		uint32_t asInt = reinterpret_cast<uint32_t&>(value);
+		data = ((asInt >> 16) & 0x8000) | ((((asInt & 0x7f800000) - 0x38000000) >> 13 ) & 0x7c00) | ((asInt >> 13) & 0x03ff);
+		return *this;
+	}
+	operator float() const {
+		return ((data & 0x8000) << 16) | (((data & 0x7c00) + 0x1C000) << 13) | ((data & 0x03ff) << 13);
+	}
+};
+
 namespace SerialisationFlags {
 	enum Flags {
 		NONE = 0,
@@ -97,7 +109,57 @@ namespace SerialisationFlags {
 		MANDATORY = 0x2,
 		OMIT_FALSE = 0x4,
 		EMPTY_IS_NULL = 0x8,
+
+		INT_8 = 0x100,
+		UINT_8 = 0x110,
+		INT_16 = 0x120,
+		UINT_16 = 0x130,
+		INT_32 = 0x140,
+		UINT_32 = 0x150,
+		INT_64 = 0x160,
+		UINT_64 = 0x170,
+		FLOAT_16 = 0x180,
+		FLOAT_32 = 0x190,
+		FLOAT_64 = 0x1a0,
+		DETERMINED_NUMERIC_TYPE = 0x1f0,
+
+		OBJECT_LAYOUT_KNOWN = 0x200,
 	};
+
+	template <typename T>
+	Flags typeToFlags(T) {
+		if constexpr(std::is_same_v<T, int8_t>) return INT_8;
+		else if constexpr(std::is_same_v<T, uint8_t>) return UINT_8;
+		else if constexpr(std::is_same_v<T, int16_t>) return INT_16;
+		else if constexpr(std::is_same_v<T, uint16_t>) return UINT_16;
+		else if constexpr(std::is_same_v<T, int32_t>) return INT_32;
+		else if constexpr(std::is_same_v<T, uint32_t>) return UINT_32;
+		else if constexpr(std::is_same_v<T, int64_t>) return INT_64;
+		else if constexpr(std::is_same_v<T, uint64_t>) return UINT_64;
+		else if constexpr(std::is_same_v<T, Float16Placeholder>) return FLOAT_16;
+		else if constexpr(std::is_same_v<T, float>) return FLOAT_32;
+		else if constexpr(std::is_same_v<T, double>) return FLOAT_64;
+	}
+
+	template <typename Functor>
+	auto typeWithFlags(Flags flags, const Functor& callback) {
+		Flags cleaned = Flags(flags & DETERMINED_NUMERIC_TYPE);
+		if (!cleaned)
+			cleaned = INT_32;
+
+		if (cleaned == INT_8) return callback(int8_t());
+		else if (cleaned == UINT_8) return callback(uint8_t());
+		else if (cleaned == INT_16) return callback(int16_t());
+		else if (cleaned == UINT_16) return callback(uint16_t());
+		else if (cleaned == INT_32) return callback(int32_t());
+		else if (cleaned == UINT_32) return callback(uint32_t());
+		else if (cleaned == INT_64) return callback(int64_t());
+		else if (cleaned == UINT_64) return callback(uint64_t());
+		else if (cleaned == FLOAT_16) return callback(Float16Placeholder());
+		else if (cleaned == FLOAT_32) return callback(float());
+		else if (cleaned == FLOAT_64) return callback(double());
+		else throw std::logic_error("Weird numeric type");
+	}
 };
 
 template <typename T>
@@ -251,28 +313,18 @@ struct IStructuredInput {
 	virtual bool nextArrayElement(Flags flags) = 0;
 	virtual void endReadingArray(Flags flags) = 0;
 	
-	virtual void startReadingObject(Flags flags) = 0;
-	virtual std::optional<std::string_view> nextObjectElement(Flags flags) = 0;
+	virtual void readObject(Flags flags, Callback<bool(std::optional<std::string_view> memberName, int index)> onEach) = 0;
 	virtual void skipObjectElement(Flags flags) = 0;
-	virtual void endReadingObject(Flags flags) = 0;
 	
 	struct Location {
 		constexpr static int UNINITIALISED = -1;
 		int loc = UNINITIALISED;
+		operator bool() {
+			return (loc != UNINITIALISED);
+		}
 	};
 	virtual Location storePosition(Flags flags) = 0;
 	virtual void restorePosition(Flags flags, Location location) = 0;
-	
-	bool seekObjectElement(Flags flags, std::string_view name, bool nameAlreadyRead) {
-		if (nameAlreadyRead)
-			skipObjectElement(flags);
-		while (std::optional<std::string_view> nextName = nextObjectElement(flags)) {
-			if (*nextName == name)
-				return true;
-			skipObjectElement(flags);
-		}
-		return false;
-	}
 };
 
 template<int Size>
@@ -709,10 +761,14 @@ struct ITcpResponder {
 template <std::integral Integer>
 struct TypedSerialiser<Integer> {
 	static void serialiseMember(IStructuredOutput& out, Integer value, SerialisationFlags::Flags flags) {
+		if (!(flags & SerialisationFlags::DETERMINED_NUMERIC_TYPE))
+			flags = decltype(flags)(flags | SerialisationFlags::typeToFlags(value));
 		out.writeInt(flags, value);
 	}
 
 	static void deserialiseMember(IStructuredInput& in, Integer& value, SerialisationFlags::Flags flags) {
+		if (!(flags & SerialisationFlags::DETERMINED_NUMERIC_TYPE))
+			flags = decltype(flags)(flags | SerialisationFlags::typeToFlags(value));
 		value = in.readInt(flags);
 	}
 
@@ -725,10 +781,14 @@ struct TypedSerialiser<Integer> {
 template <std::floating_point Float>
 struct TypedSerialiser<Float> {
 	static void serialiseMember(IStructuredOutput& out, Float value, SerialisationFlags::Flags flags) {
+		if (!(flags & SerialisationFlags::DETERMINED_NUMERIC_TYPE))
+			flags = decltype(flags)(flags | SerialisationFlags::typeToFlags(value));
 		out.writeFloat(flags, value);
 	}
 
 	static void deserialiseMember(IStructuredInput& in, Float& value, SerialisationFlags::Flags flags) {
+		if (!(flags & SerialisationFlags::DETERMINED_NUMERIC_TYPE))
+			flags = decltype(flags)(flags | SerialisationFlags::typeToFlags(value));
 		value = in.readFloat(flags);
 	}
 
@@ -864,12 +924,12 @@ struct TypedSerialiser<Vector> {
 		in.startReadingArray(flags);
 		int index = 0;
 		while (in.nextArrayElement(flags)) {
-			if (int(value.size()) < index + 1)
+			if (std::ssize(value) < index + 1)
 				value.emplace_back(typename Vector::value_type());
 			TypedSerialiser<ValueType>::deserialiseMember(in, value[index], flags);
 			index++;
 		}
-		if (int(value.size()) > index)
+		if (std::ssize(value) > index)
 			value.resize(index);
 		in.endReadingArray(flags);
 	}
@@ -911,27 +971,26 @@ struct TypedSerialiser<Map> {
 	}
 
 	static void deserialiseMember(IStructuredInput& in, Map& value, SerialisationFlags::Flags flags) {
-		in.startReadingObject(flags);
-		std::optional<std::string_view> elementName;
 		if (value.empty()) {
-			while ((elementName = in.nextObjectElement(flags))) { // Yes, there is an assignment
+			in.readObject(flags, [&] (std::optional<std::string_view> elementName, int) { // Yes, there is an assignment
 				TypedSerialiser<ValueType>::deserialiseMember(in, value[typename Map::key_type(*elementName)], flags);
-			}
+				return true;
+			});
 		} else {
 			// If there were some elements, update them and move them into a new map
 			// Manipulating a set of names that were already used would be annoying
 			Map result;
-			while ((elementName = in.nextObjectElement(flags))) {
+			in.readObject(flags, [&] (std::optional<std::string_view> elementName, int) {
 				auto found = value.find(typename Map::key_type(*elementName));
 				if (found != value.end()) {
 					TypedSerialiser<ValueType>::deserialiseMember(in, found->second, flags);
 					result[typename Map::key_type(*elementName)] = std::move(found->second);
 				} else
 					TypedSerialiser<ValueType>::deserialiseMember(in, result[typename Map::key_type(*elementName)], flags);
-			}
+				return true;
+			});
 			std::swap(result, value);
 		}
-		in.endReadingObject(flags);
 	}
 
 	static void describeType(IPropertyDescriptionFiller& filler)  {
@@ -991,6 +1050,7 @@ struct TypedSerialiser<Ptr> {
 		} else {
 			if (value)
 				value.reset();
+			in.readNull(flags);
 		}
 	}
 

@@ -25,7 +25,7 @@ struct HttpParseState {
 		int position = parsePosition;
 
 		if (position == 0) { // Header not read yet
-			while (position < int(input.size())) {
+			while (position < std::ssize(input)) {
 				if (input[position] == '\r') [[unlikely]] {
 
 					if (!firstLineReader({input.data(), size_t(position)})) {
@@ -33,7 +33,7 @@ struct HttpParseState {
 					}
 
 					position++;
-					if (position >= int(input.size()))
+					if (position >= std::ssize(input))
 						break;
 					if (input[position] != '\n')
 						return {ServerReaction::DISCONNECT, 0};
@@ -42,14 +42,14 @@ struct HttpParseState {
 				position++;
 			}
 
-			if (position == int(input.size())) {
+			if (position == std::ssize(input)) {
 				return {ServerReaction::READ_ON, position - 1};
 			}
 			position++;
 			parsePosition = position;
 		}
 
-		if (position == int(input.size())) {
+		if (position == std::ssize(input)) {
 			return {ServerReaction::READ_ON, position - 1};
 		}
 		// Parse it line by line
@@ -60,19 +60,19 @@ struct HttpParseState {
 			std::string_view attributeValue;
 
 			// Skip initial whitespace
-			while (position < int(input.size())) {
+			while (position < std::ssize(input)) {
 				if (input[position] != ' ' && input[position] != '\t') [[likely]] {
 					attributeNameStart = position;
 					break;
 				}
 				position++;
 			}
-			if (position >= int(input.size())) {
+			if (position >= std::ssize(input)) {
 				return {ServerReaction::READ_ON, position - 1};
 			}
 
 			// Go through the attribute name
-			while (position < int(input.size())) {
+			while (position < std::ssize(input)) {
 				if (input[position] == ' ' || input[position] == '\t' || input[position] == ':') {
 					attributeName = std::string_view(input.data() + attributeNameStart, position - attributeNameStart);
 					break;
@@ -81,13 +81,13 @@ struct HttpParseState {
 					input[position] += 'a' - 'A';
 				position++;
 			}
-			if (position >= int(input.size())) {
+			if (position >= std::ssize(input)) {
 				return {ServerReaction::READ_ON, position - 1};
 			}
 
 			// Find the value
 			bool colonFound = false;
-			while (position < int(input.size())) {
+			while (position < std::ssize(input)) {
 				if (input[position] == ':')
 					colonFound = true;
 				if (input[position] != ' ' && input[position] != '\t' && input[position] != ':') {
@@ -96,7 +96,7 @@ struct HttpParseState {
 				}
 				position++;
 			}
-			if (position >= int(input.size())) {
+			if (position >= std::ssize(input)) {
 				return {ServerReaction::READ_ON, position - 1};
 			}
 			if (colonFound == false) {
@@ -104,14 +104,14 @@ struct HttpParseState {
 			}
 
 			// Find the end of the attribute
-			while (position < int(input.size())) {
+			while (position < std::ssize(input)) {
 				if (input[position] == '\r') {
 					attributeValue = std::string_view(input.data() + attributeValueStart, position - attributeValueStart);
 					break;
 				}
 				position++;
 			}
-			if (position >= int(input.size())) {
+			if (position >= std::ssize(input)) {
 				return {ServerReaction::READ_ON, position - 1};
 			}
 
@@ -124,12 +124,12 @@ struct HttpParseState {
 			// Finish the line
 			position += 2;
 			parsePosition = position;
-			if (position >= int(input.size())) {
+			if (position >= std::ssize(input)) {
 				return {ServerReaction::READ_ON, position - 1};
 			}
 		}
 
-		if (parsePosition + 1 >= int(input.size())) {
+		if (parsePosition + 1 >= std::ssize(input)) {
 			return {ServerReaction::READ_ON, position - 1};
 		}
 		if (input[parsePosition + 1] != '\n')
@@ -163,7 +163,7 @@ void demangleUtf8Url(std::string_view input, StringType& output) {
 
 template <AssembledString StringType = std::string>
 void demangleHttpResponse(std::string_view input, StringType& output) {
-	for (int i = 0; i < int(input.size()); i++) {
+	for (int i = 0; i < std::ssize(input); i++) {
 		if (input[i] == '+') {
 			output += ' ';
 		} else if (input[i] == '%') {
@@ -186,19 +186,19 @@ void demangleHttpResponse(std::string_view input, StringType& output) {
 				}
 			};
 			auto urlDecode = [&input] (int index) {
-				if (index + 3 > int(input.size())) [[unlikely]]
+				if (index + 3 > std::ssize(input)) [[unlikely]]
 					return 0;
 				int escaped = {};
 				std::from_chars(&input[index + 1], &input[index + 3], escaped, 16);
 				return escaped;
 			};
 			int decoded = urlDecode(i);
-			if (decoded == '&' && i + 8 < int(input.size())) [[unlikely]] {
+			if (decoded == '&' && i + 8 < std::ssize(input)) [[unlikely]] {
 				if (urlDecode(i + 3) == '#' && input[i + 6] >= '0' && input[i + 6] <= '9') {
 					int numberEnd = i + 7;
-					while (numberEnd < int(input.size()) && input[numberEnd] >= '0' && input[numberEnd] <= '9')
+					while (numberEnd < std::ssize(input) && input[numberEnd] >= '0' && input[numberEnd] <= '9')
 						numberEnd++;
-					if (numberEnd + 2 < int(input.size())) [[likely]] {
+					if (numberEnd + 2 < std::ssize(input)) [[likely]] {
 						if (input[numberEnd] == '%' && input[numberEnd + 1] == '3'
 								&& (input[numberEnd + 2] == 'b' || input[numberEnd + 2] == 'B')) {
 							std::from_chars(&input[i + 6], &input[numberEnd], decoded);
@@ -233,7 +233,7 @@ void mangleHttpResponse(std::string_view input, StringType& output) {
 			}
 		}
 	};
-	for (int i = 0; i < int(input.size()); i++) {
+	for (int i = 0; i < std::ssize(input); i++) {
 		unsigned char letter = *reinterpret_cast<const unsigned char*>(&input[i]);
 		if (letter == ' ')
 			output += '+';
@@ -253,7 +253,7 @@ void mangleHttpResponse(std::string_view input, StringType& output) {
 				value = letter & 0b00000111;
 			}
 			for (int j = 1; j < length; j++) {
-				if (i + j >= int(input.size())) [[unlikely]]
+				if (i + j >= std::ssize(input)) [[unlikely]]
 					return;
 				value <<= 6;
 				value += 0b00111111 & *reinterpret_cast<const unsigned char*>(&input[i + j]);
@@ -284,7 +284,7 @@ struct HtmlMessageEncoding {
 
 		int getEnd() const {
 			int end = _position;
-			while (end < int(_contents.size()) && _contents[end] != '&')
+			while (end < std::ssize(_contents) && _contents[end] != '&')
 				end++;
 			return end;
 		}
@@ -322,12 +322,12 @@ struct HtmlMessageEncoding {
 			bool exponentWasUsed = false;
 			bool decimalWasUsed = false;
 			bool canBeInt = true;
-			for (; demangledPos < int(demangled.size()); demangledPos++) {
+			for (; demangledPos < std::ssize(demangled); demangledPos++) {
 				if (demangled[demangledPos] == 'e' || demangled[demangledPos] == 'E') {
 					if (exponentWasUsed) [[unlikely]]
 						return TYPE_STRING;
 					exponentWasUsed = true;
-					if (demangledPos >= int(demangled.size())) [[unlikely]]
+					if (demangledPos >= std::ssize(demangled)) [[unlikely]]
 						return TYPE_STRING;
 					if (demangled[demangledPos] == '-')
 						demangledPos++;
@@ -385,32 +385,30 @@ struct HtmlMessageEncoding {
 			fail("Type doesn't support array");
 		}
 
-		void startReadingObject(Flags) final override {
+		void readObject(Flags, Callback<bool(std::optional<std::string_view> memberName, int index)> onEach) override {
 			if (_objectStarted) [[unlikely]]
-					fail("Type doesn't support object");
+					fail("Type doesn't support nested object");
 			_objectStarted = true;
-		}
-		std::optional<std::string_view> nextObjectElement(Flags) final override {
-			if (_position >= int(_contents.size()))
-				return std::nullopt;
-			if (_contents[_position] == '&')
+			int index = 0;
+			for (; _position < std::ssize(_contents); _position++) {
+				if (_contents[_position] == '&')
+					_position++;
+				int start = _position;
+				while (_position < std::ssize(_contents) && _contents[_position] != '=')
+					_position++;
+				_demangled.clear();
+				demangleHttpResponse(_contents.substr(start, _position - start), _demangled);
 				_position++;
-			int start = _position;
-			while (_position < int(_contents.size()) && _contents[_position] != '=')
-				_position++;
-			_demangled.clear();
-			demangleHttpResponse(_contents.substr(start, _position - start), _demangled);
-			_position++;
-			return _demangled;
+				onEach(_demangled, index);
+				index++;
+			}
+			_objectStarted = false;
 		}
 		void skipObjectElement(Flags) final override {
 			if (_contents[_position] == '&')
 				_position++;
-			while (_position < int(_contents.size()) && _contents[_position] != '&')
+			while (_position < std::ssize(_contents) && _contents[_position] != '&')
 				_position++;
-		}
-		void endReadingObject(Flags) final override {
-			_objectStarted = false;
 		}
 
 		Location storePosition(Flags) final override {
@@ -621,7 +619,7 @@ public:
 
 			virtual bool firstLineReader(std::string_view firstLine) override {
 				int separator1 = 0;
-				while (firstLine[separator1] != ' ' && separator1 < int(firstLine.size()))
+				while (firstLine[separator1] != ' ' && separator1 < std::ssize(firstLine))
 					separator1++;
 				std::string_view methodName = firstLine.substr(0, separator1);
 				if (methodName == "GET")
@@ -633,7 +631,7 @@ public:
 
 				separator1++;
 				int separator2 = separator1;
-				while (firstLine[separator2] != ' ' && separator2 < int(firstLine.size()))
+				while (firstLine[separator2] != ' ' && separator2 < std::ssize(firstLine))
 					separator2++;
 				path = std::pair<int, int>(separator1, separator2 - separator1);
 				separator2++;
@@ -677,7 +675,7 @@ public:
 			// All body has beed read
 			if (_state.requestType == ParseState::GET_REQUEST || _state.requestType == ParseState::POST_REQUEST) [[likely]] {
 				if (_state.requestType == ParseState::POST_REQUEST) {
-					if (_state.bodySize == -1 || int(input.size()) < _state.parsePosition + _state.bodySize) {
+					if (_state.bodySize == -1 || std::ssize(input) < _state.parsePosition + _state.bodySize) {
 						return {ServerReaction::READ_ON, input.size()};
 					}
 				}
@@ -843,11 +841,11 @@ class HttpClient : public IRpcResponder {
 
 		virtual bool firstLineReader(std::string_view firstLine) override {
 			int separator1 = 0;
-			while (firstLine[separator1] != ' ' && separator1 < int(firstLine.size()))
+			while (firstLine[separator1] != ' ' && separator1 < std::ssize(firstLine))
 				separator1++;
 			separator1++;
 			int separator2 = separator1 + 1;
-			while (firstLine[separator2] != ' ' && separator2 < int(firstLine.size()))
+			while (firstLine[separator2] != ' ' && separator2 < std::ssize(firstLine))
 				separator2++;
 			std::from_chars(&firstLine[separator1], &firstLine[separator2], resultCode);
 			return true;
@@ -910,7 +908,7 @@ public:
 					}
 				}
 
-				if (state.bodySize > 0 && int(input.size()) < state.parsePosition + state.bodySize) {
+				if (state.bodySize > 0 && std::ssize(input) < state.parsePosition + state.bodySize) {
 					return {ServerReaction::READ_ON, RequestToken{}, input.size()};
 				}
 			
