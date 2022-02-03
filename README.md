@@ -37,6 +37,7 @@ Bomba is fully usable, but some additional features are planned.
 Bomba implements several communication protocols for the purpose of communication in a standardised way supported by many other libraries. These are implemented in a way that avoids dynamic allocation, but can be added easily (except some parts that can't be used on special platforms anyway).
 * HTTP - Minimal implementation, supporting only GET and POST, but usable as a web server with some interactive content
 * JSON-RPC - Built on top of HTTP POST
+* Binary - short header and binary-encoded data (not any standard format, but close enough to be easily modifiable to one)
 
 Many other protocols should be possible to implement using the interfaces and concepts expected from protocols. They may be added in the future.
 
@@ -54,7 +55,7 @@ Currently, there are two networking related classes:
 	* It's possible to check if the response was already received, eliminating the need to block entirely
 
 ### Performance
-As a side effect of restricting dynamic allocation for embedded-friendliness, the library has very good performance. JMeter reports about 60'000 HTTP requests per second singlethreaded on a laptop CPU with turbo boost disabled (which is about twice the performance of Nginx), but this is mainly a limit of the networking interface. Internally measured time to parse and respond to a request is lower. If large numbers of requests are batched into massive TCP packets, the throughput approaches 500'000 packets per second per second singlethreaded. Calling a function via JSON-RPC adds about 1 microsecond to the processing time.
+As a side effect of restricting dynamic allocation for embedded-friendliness, the library has very good performance. JMeter reports about 60'000 HTTP requests per second singlethreaded on a laptop CPU with turbo boost disabled (which is about twice the performance of Nginx), but this is mainly a limit of the networking interface. Internally measured time to parse and respond to a request is lower. Under particularly favourable circumstances, the throughput can reach 1'000'000 packets per second per second singlethreaded. Calling a function via JSON-RPC adds about 1 microsecond to the processing time.
 
 ## Error handling
 Common problems like incomplete requests in receive buffers are handled by returning enums for these kinds of calls, either alone or as part of `std::pair` or `std::tuple` with other values.
@@ -96,7 +97,7 @@ std::string written = point.serialise<Bomba::BasicJson<>>();
 point.deserialise<Bomba::BasicJson<>>(reading);
 ```
 
-The first template argument sets the data format. `BasicJson<>` makes it JSON. `BinaryProtocol<>` makes it binary, similar to reinterpret casting to pragmapacked structures, but handling dynamically sized structures like strings (header `bomba_binary_protocol.hpp`).
+The first template argument sets the data format. `BasicJson<>` makes it JSON. `BinaryProtocol<>` makes it binary, similar to reinterpret casting to pragmapacked structures, but with proper handling of dynamically sized structures like strings (header `bomba_binary_protocol.hpp`). The format is better described in section where [it's used for remote procedure calls](#binary-rpc-server).
 
 To use different internal type than `std::string` for unescaping strings, set it as a second template argument. More on this is [here](#custom-string-type). To append the result of `serialise()` to an existing string, use its overload that accepts a reference to the output as argument. The output type is set by the second template argument, which defaults to the type of the first argument.
 
@@ -230,7 +231,7 @@ R"~(<!DOCTYPE html><html>
 </body></html>)~";
 Bomba::SimpleGetResponder getResponder = { page };
 
-Bomba::RpcLambda<[] (std::string newMessage = Bomba::name("sent"),
+Bomba::RpcStatelessLambda<[] (std::string newMessage = Bomba::name("sent"),
 		int repeats = Bomba::name("repeats"), bool yell = Bomba::name("yell")) {
 	for (int i = 0; i < repeats; i++) {
 		if (yell)
@@ -249,7 +250,7 @@ server.run();
 #### POST-only server
 This server can only respond to post request made by RPC calls, with no ability to serve a web page that could be used as a client.
 ```C++
-Bomba::RpcLambda<[] (std::string newMessage = Bomba::name("sent"),
+Bomba::RpcStatelessLambda<[] (std::string newMessage = Bomba::name("sent"),
 		int repeats = Bomba::name("repeats"), bool yell = Bomba::name("yell")) {
 	for (int i = 0; i < repeats; i++) {
 		if (yell)
@@ -390,6 +391,33 @@ int main(int argc, char** argv) {
 }
 ```
 
+#### Binary RPC server
+This server responds to binary-encoded requests. The argument names are not used.
+```C++
+Bomba::RpcStatelessLambda<[] (std::string newMessage = Bomba::name("sent"),
+		int repeats = Bomba::name("repeats"), bool yell = Bomba::name("yell")) {
+	for (int i = 0; i < repeats; i++) {
+		if (yell)
+			std::cout << "RECEIVED: " << newMessage << std::endl;
+		else
+			std::cout << "Received: " << newMessage << std::endl;
+	}
+}> method;
+BinaryProtocolServer<> binaryServer = {method};
+Bomba::TcpServer server(http, 8080);
+server.run();
+```
+The performance benefit of using a binary format appears to be insignificant compared to the overhead of reading from TCP.
+
+The binary format is relatively simple, somewhat similar to reinterpret casting a struct defined in a pragma pack:
+* A function call starts with identifier, a 32 bit unsigned integer, size, a 16 bit integer (can be overriten with a template argument), then a sequence of 8 bit unsigned integers telling the indexes of the objects on the path to the target and a sequence of arguments the function takes
+* Numeric types are the same as in the serialised object or function call, but normalised to little endian (can be overriden with a template argument)
+* String is dynamically sized and prefixed by its size, written as a 16 bit unsigned integer (same type as message size)
+* Array is prefixed with size (same type as string), then contains the given number of classes
+* Key-value map is prefixed with size (same type as string) and contains pairs of string keys and values
+* Objects (corresponding to C++ classes) are sequences of values, without keys
+* Optional types and pointers are not supported (yet)
+
 ### Clients
 Implementing a better client than `Bomba::SyncNetworkClient` might allow more functionality, but it should be good enough for many use cases.
 
@@ -419,7 +447,7 @@ This will call a HTTP method of a [server](#post-only-server).
 #include "bomba_rpc_object.hpp"
 //..
 
-Bomba::RpcLambda<[] (std::string newMessage = Bomba::name("sent"),
+Bomba::RpcStatelessLambda<[] (std::string newMessage = Bomba::name("sent"),
 		int repeats = Bomba::name("repeats"),
 		bool yell = Bomba::name("yell") | Bomba::SerialisationFlags::OMIT_FALSE) {
 	throw std::runtime_error("Not this one!"); // This lambda will not be called in the client
@@ -470,6 +498,25 @@ std::cout << remote.getMessage() << std::endl;
 std::string newMessage;
 std::getline(std::cin, newMessage);
 remote.setMessage(newMessage);
+```
+
+#### Binary RPC client
+This is the client counterpart for the [Binary RPC server example](#binary-rpc-server):
+```C++
+Bomba::RpcStatelessLambda<[] (std::string newMessage = Bomba::name("sent"),
+		int repeats = Bomba::name("repeats"), bool yell = Bomba::name("yell")) {
+	for (int i = 0; i < repeats; i++) {
+		if (yell)
+			std::cout << "RECEIVED: " << newMessage << std::endl;
+		else
+			std::cout << "Received: " << newMessage << std::endl;
+	}
+}> method;
+Bomba::SyncNetworkClient client("0.0.0.0", "8080");
+BinaryProtocolClient<> binaryClient = {method, client};
+
+std::getline(std::cin, newMessage);
+remote(newMessage, 1, true);
 ```
 
 #### JavaScript client

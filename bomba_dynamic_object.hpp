@@ -163,12 +163,20 @@ public:
 		}
 		return nullptr;
 	}
-	std::string_view childName(const IRemoteCallable* child) const override {
+	const IRemoteCallable* getChild(int index) const override {
+		if (index < std::ssize(_contents))
+			return _contents[index].second.operator->();
+		else
+			return nullptr;
+	}
+	std::pair<std::string_view, int> childName(const IRemoteCallable* child) const override {
+		int index = 0;
 		for (auto& [name, func] : _contents) {
 			if (func.operator->() == child)
-				return name;
+				return {name, index};
+			index++;
 		}
-		return "";
+		return {"", NO_SUCH_STRUCTURE};
 	}
 
 	void listTypes(ISerialisableDescriptionFiller& filler) const override {

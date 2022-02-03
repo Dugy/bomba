@@ -69,7 +69,7 @@ struct IResponseReader {
 		}
 	};
 
-	using ChildGettingFunction = IRemoteCallable* (*)(const IRemoteCallable* self, int offset, std::string_view name);
+	using ChildGettingFunction = IRemoteCallable* (*)(const IRemoteCallable* self, int offset);
 	using ChildNameGettingFunction = bool (*)(const IRemoteCallable* self, int offset, const IRemoteCallable* child,
 			Callback<void(std::string_view)> reaction);
 	using ArgumentAddingFunction = void (*)(IPropertyDescriptionFiller& filler, std::string_view name);
@@ -158,10 +158,14 @@ struct IResponseReader {
 
 	template <typename Parent, int Index = 0, typename SFIANE = void>
 	struct ChildAccess {
-		static void name(const IRemoteCallable* parent, const IRemoteCallable* child, Callback<void(std::string_view)> reaction) {
+		static std::pair<std::string_view, int> name(const IRemoteCallable* parent, const IRemoteCallable* child) {
 			logicError("Broken structure");
+			return {"", IRemoteCallable::NO_SUCH_STRUCTURE};
 		}
 		static IRemoteCallable* instance(const IRemoteCallable* parent, std::string_view name) {
+			return nullptr;
+		}
+		static IRemoteCallable* instance(const IRemoteCallable* parent, int index) {
 			return nullptr;
 		}
 		static void listTypes(ISerialisableDescriptionFiller&) {}
@@ -172,17 +176,24 @@ struct IResponseReader {
 	struct ChildAccess<Parent, Index, std::enable_if_t<
 				std::is_same_v<bool, decltype(boolIfDeclared(SubclassAccess<Parent, Index>()))>>> {
 		constexpr static SubclassAccess<Parent, Index> accessor = {};
-		static void name(const IRemoteCallable* parent, const IRemoteCallable* child, Callback<void(std::string_view)> reaction) {
+		static std::pair<std::string_view, int> name(const IRemoteCallable* parent, const IRemoteCallable* child) {
 			int offset = childOffset(accessor);
-			if (!childNameGetter(accessor)(parent, offset, child, reaction)) {
-				ChildAccess<Parent, Index + 1>::name(parent, child, reaction);
+			std::string_view name;
+			if (!childNameGetter(accessor)(parent, offset, child, [&] (std::string_view knownName) { name = knownName; })) {
+				return ChildAccess<Parent, Index + 1>::name(parent, child);
 			}
+			return { name, Index };
 		}
 		static IRemoteCallable* instance(const IRemoteCallable* parent, std::string_view name) {
 			int offset = childOffset(accessor);
 			if (name == childName(accessor))
-				return childGetter(accessor)(parent, offset, name);
+				return childGetter(accessor)(parent, offset);
 			return ChildAccess<Parent, Index + 1>::instance(parent, name);
+		}
+		static IRemoteCallable* instance(const IRemoteCallable* parent, int index) {
+			if (index == Index)
+				return childGetter(accessor)(parent, childOffset(accessor));
+			return ChildAccess<Parent, Index + 1>::instance(parent, index);
 		}
 		static void listTypes(ISerialisableDescriptionFiller& filler) {
 			subtypesAdder(accessor)(filler);
@@ -248,6 +259,11 @@ struct IResponseReader {
 	public:
 		FutureBase(const IResponseReader<Returned>* reader, IRpcResponder* responder, RequestToken token)
 			: _reader(reader), _responder(responder), _token(token) {}
+		FutureBase(FutureBase&& other) : _reader(other._reader), _responder(other._responder), _token(other._token) {
+			other._reader = nullptr;
+			other._responder = nullptr;
+		}
+		FutureBase& operator=(FutureBase&&) {}
 		FutureBase() = default;
 	};
 } // namespace Detail
@@ -257,9 +273,25 @@ template <typename Returned>
 class Future : Detail::FutureBase<Returned> {
 	mutable std::optional<Returned> _value = std::nullopt;
 	using Base = Detail::FutureBase<Returned>;
+
+	void cleanup() {
+		if (Base::_responder && !_value) {
+			get();
+			Base::_reader = nullptr;
+			_value = std::nullopt;
+		}
+	}
 public:
 	using Base::FutureBase;
 	Future(Returned&& value) : _value(value) {}
+	Future& operator=(Future&& other) {
+		cleanup();
+		std::swap(Base::_reader, other._reader);
+		std::swap(Base::_responder, other._responder);
+		std::swap(Base::_token, other._token);
+		std::swap(_value, other._value);
+		return *this;
+	}
 
 	Returned get() const {
 		if (!_value)
@@ -271,6 +303,10 @@ public:
 		if (_value)
 			return true;
 		return Base::_responder->hasResponse(Base::_token);
+	}
+
+	~Future() {
+		cleanup();
 	}
 };
 
@@ -412,7 +448,7 @@ struct RpcLambdaInformationHolder {
 					} else {
 						setArg<0>(nextName, input, *arguments, index, Flags);
 					}
-					return true;
+					return (nextName.has_value() || index < argsSize);
 				});
 			}
 
@@ -434,7 +470,7 @@ struct RpcLambdaInformationHolder {
 			constexpr int index = argumentInfoSize - sizeof...(Others) - 1;
 			SerialisationFlags::Flags flags = SerialisationFlags::Flags(Flags | argumentInfo[index].flags);
 			auto write = [&] () {
-				out.introduceObjectMember(flags, argumentInfo[index].name, index);
+				out.introduceObjectMember(SerialisationFlags::Flags(Flags | SerialisationFlags::OBJECT_LAYOUT_KNOWN), argumentInfo[index].name, index);
 				TypedSerialiser<First>::serialiseMember(out, first, flags);
 			};
 			if constexpr(std::is_same_v<bool, First>) {
@@ -465,11 +501,11 @@ struct RpcLambdaInformationHolder {
 		template <typename... AnyArgs>
 		RequestToken sendRequest(IRpcResponder* responder, AnyArgs&&... args) const {
 			return responder->send({}, this, [&] (IStructuredOutput& out, RequestToken) {
-				out.startWritingObject(Flags, argumentInfoSize);
+				out.startWritingObject(SerialisationFlags::Flags(Flags | SerialisationFlags::OBJECT_LAYOUT_KNOWN), argumentInfoSize);
 				if constexpr(!std::is_void_v<FirstArg>) {
 					remoteCallHelper(out, std::forward<AnyArgs>(args)...);
 				}
-				out.endWritingObject(Flags);
+				out.endWritingObject(SerialisationFlags::Flags(Flags | SerialisationFlags::OBJECT_LAYOUT_KNOWN));
 			});
 		}
 
@@ -671,35 +707,43 @@ class RpcObject : public Detail::RpcObjectCommon {
 #endif
 
 protected:
-	std::string_view childName(const IRemoteCallable* child) const final override {
+	std::pair<std::string_view, int> childName(const IRemoteCallable* child) const final override {
 #ifdef NO_DEFECT_REPORT_2118
+		int index = 0;
 		for (auto& it : childEntries) {
 			std::string_view nameObtained;
 			if (it.childNameGettingFunction(this, it.offset, child, [&] (std::string_view name) {
 				nameObtained = name;
 			})) {
-				return nameObtained;
+				return {nameObtained, index};
 			}
+			index++;
 		}
 		logicError("Broken structure");
-		return "";
+		return {"", NO_SUCH_STRUCTURE};
 #else
-		std::string_view result;
-		Detail::ChildAccess<Derived>::name(this, child, [&](std::string_view name) {
-			result = name;
-		});
-		return result;
+		return Detail::ChildAccess<Derived>::name(this, child);
 #endif
 	}
 	const IRemoteCallable* getChild(std::string_view name) const final override {
 #ifdef NO_DEFECT_REPORT_2118
 		for (auto& it : childEntries) {
 			if (it.name == name)
-				return it.childGettingFunction(this, it.offset, name);
+				return it.childGettingFunction(this, it.offset);
 		}
 		return nullptr;
 #else
 		return Detail::ChildAccess<Derived>::instance(this, name);
+#endif
+	}
+	const IRemoteCallable* getChild(int index) const final override {
+#ifdef NO_DEFECT_REPORT_2118
+		if (index < std::ssize(childEntries)) {
+			return childEntries[index].childGettingFunction(this, childEntries[index].offset);
+		}
+		return nullptr;
+#else
+		return Detail::ChildAccess<Derived>::instance(this, index);
 #endif
 	}
 
@@ -708,7 +752,6 @@ protected:
 		for (auto& it : childEntries) {
 			it.subtypesAddingFunction(filler);
 		}
-		return nullptr;
 #else
 		return Detail::ChildAccess<Derived>::listTypes(filler);
 #endif
@@ -719,7 +762,6 @@ protected:
 		for (auto& it : childEntries) {
 			it.childDescribingFunction(filler);
 		}
-		return nullptr;
 #else
 		return Detail::ChildAccess<Derived>::describeChildren(filler);
 #endif
@@ -766,7 +808,7 @@ struct RpcMember : public RpcStatelessLambda<Func, Flags> {
 	}
 private:
 
-	constexpr static Detail::ChildGettingFunction childGetter = [] (const IRemoteCallable* parent, int offset, std::string_view name) {
+	constexpr static Detail::ChildGettingFunction childGetter = [] (const IRemoteCallable* parent, int offset) {
 		return reinterpret_cast<IRemoteCallable*>(reinterpret_cast<intptr_t>(parent) + offset);
 	};
 

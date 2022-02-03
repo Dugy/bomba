@@ -438,6 +438,22 @@ public:
 	StreamingBuffer() : GeneralisedBuffer({reinterpret_cast<char*>(&_basic), sizeof(_basic)}) { }
 };
 
+template <int StaticSize>
+struct NonOwningStreamingBuffer : StreamingBuffer<StaticSize> {
+	Callback<void(std::span<const char>)> writer;
+	void flush() override {
+		if (this->size() > this->_sizeAtLastFlush) {
+			writer({this->_basic.data(), size_t(this->size() - this->_sizeAtLastFlush)});
+			this->_sizeAtLastFlush = this->size();
+		}
+	}
+	NonOwningStreamingBuffer(Callback<void(std::span<const char>)> writer) : writer(writer) {}
+	~NonOwningStreamingBuffer() {
+		flush();
+	}
+};
+
+
 template <int StaticSize = 1024>
 class NonExpandingBuffer : public GeneralisedBuffer {
 	std::array<char, StaticSize> _basic;
@@ -614,7 +630,7 @@ struct UserId {
 };
 
 struct RequestToken {
-	int id = 0;
+	uint32_t id = 0; // We want it to overflow in a defined way
 	bool operator==(RequestToken other) const {
 		return id == other.id;
 	}
@@ -660,8 +676,8 @@ public:
 		return _parent;
 	}
 	
-	void setResponder(IRpcResponder* responder) {
-		_responder = responder;
+	void setResponder(IRpcResponder& responder) {
+		_responder = &responder;
 	}
 	
 	virtual bool call([[maybe_unused]] IStructuredInput* arguments, [[maybe_unused]] IStructuredOutput& result,
@@ -672,9 +688,14 @@ public:
 	virtual const IRemoteCallable* getChild([[maybe_unused]] std::string_view name) const {
 		return nullptr;
 	}
-	virtual std::string_view childName([[maybe_unused]] const IRemoteCallable* child) const {
+	virtual const IRemoteCallable* getChild([[maybe_unused]] int index) const {
+		return nullptr;
+	}
+
+	constexpr static int NO_SUCH_STRUCTURE = -1;
+	virtual std::pair<std::string_view, int> childName([[maybe_unused]] const IRemoteCallable* child) const {
 		logicError("No such structure");
-		return "";
+		return {"", NO_SUCH_STRUCTURE};
 	}
 	
 	virtual void listTypes([[maybe_unused]] ISerialisableDescriptionFiller& filler) const {
@@ -719,7 +740,7 @@ struct PathWithSeparator {
 
 		StringType path;
 		prependPath(callable->parent(), path);
-		path += callable->parent()->childName(callable);
+		path += callable->parent()->childName(callable).first;
 		return path;
 	}
 	
@@ -729,7 +750,7 @@ private:
 			return;
 			
 		prependPath(callable->parent(), pathSoFar);
-		pathSoFar += callable->parent()->childName(callable);
+		pathSoFar += callable->parent()->childName(callable).first;
 		pathSoFar += Separator.c_str();
 	}
 };

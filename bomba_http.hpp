@@ -684,15 +684,6 @@ public:
 				constexpr static char correctIntro[] = "HTTP/1.1 200 OK\r\nContent-Length:";
 				constexpr static char unsetSize[] = " 0         ";
 
-				constexpr int StaticSize = 1024;
-				struct StreamingBufferType : StreamingBuffer<StaticSize> {
-					Callback<void(std::span<const char>)> writer;
-					void flush() override {
-						writer({_basic.data(), size_t(size() - _sizeAtLastFlush)});
-					}
-					StreamingBufferType(decltype(writer) writer) : writer(writer) {}
-				};
-
 				struct WriteStarter : IWriteStarter {
 					Callback<void(std::span<const char>)> writer;
 					bool startedResponse = false;
@@ -729,10 +720,9 @@ public:
 						writer(view);
 					}
 					void writeKnownSize(std::string_view resourceType, int64_t size, Callback<void(GeneralisedBuffer&)> filler) override {
-						StreamingBufferType streamingBuffer{writer};
+						NonOwningStreamingBuffer<1024> streamingBuffer{writer};
 						startCorrectResponse(streamingBuffer, resourceType, size);
 						filler(streamingBuffer);
-						streamingBuffer.flush();
 					}
 				};
 

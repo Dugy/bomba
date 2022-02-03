@@ -299,7 +299,7 @@ public:
 	
 	JsonRpcClientProtocol(IRemoteCallable& callable, HttpType& upper)
 			: _upper(upper) {
-		callable.setResponder(this);
+		callable.setResponder(*this);
 	}
 };
 

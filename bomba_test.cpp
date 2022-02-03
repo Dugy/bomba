@@ -119,8 +119,12 @@ struct DummyRpcClass : IRemoteCallable {
 		bool call(IStructuredInput* arguments, IStructuredOutput& result, Callback<> introduceResult,
 				Callback<void(std::string_view)>, std::optional<UserId>) const final override {
 			if (arguments) {
-				arguments->readObject(noFlags, [&] (std::optional<std::string_view>, int) {
-					arguments->skipObjectElement(noFlags); return true;
+				arguments->readObject(SerialisationFlags::OBJECT_LAYOUT_KNOWN, [&] (std::optional<std::string_view> name, int) {
+					if (name) {
+						arguments->skipObjectElement(noFlags);
+						return true;
+					}
+					return false;
 				});
 			}
 			introduceResult();
@@ -130,8 +134,8 @@ struct DummyRpcClass : IRemoteCallable {
 		std::string operator()() const {
 			IRpcResponder* responder = getResponder();
 			auto token = responder->send(UserId{}, this, [] (IStructuredOutput& out, RequestToken) {
-				out.startWritingObject(noFlags, 0);
-				out.endWritingObject(noFlags);
+				out.startWritingObject(SerialisationFlags::OBJECT_LAYOUT_KNOWN, 0);
+				out.endWritingObject(SerialisationFlags::OBJECT_LAYOUT_KNOWN);
 			});
 
 			std::string returned;
@@ -142,7 +146,7 @@ struct DummyRpcClass : IRemoteCallable {
 		}
 		void listTypes(ISerialisableDescriptionFiller&) const override {}
 		void generateDescription(IRemoteCallableDescriptionFiller& filler) const override {
-			filler.addMethod(parent()->childName(this), "Gets the stored message", [&] (IPropertyDescriptionFiller& filler) { },
+			filler.addMethod(parent()->childName(this).first, "Gets the stored message", [&] (IPropertyDescriptionFiller& filler) { },
 					[&] (IPropertyDescriptionFiller& filler) {
 				filler.addMember("stored", "the stored message", [&] { TypedSerialiser<std::string>::describeType(filler); });
 			});
@@ -157,7 +161,12 @@ struct DummyRpcClass : IRemoteCallable {
 				return false;
 			}
 			bool found = false;
-			arguments->readObject(noFlags, [&] (std::optional<std::string_view> name, int) {
+			arguments->readObject(SerialisationFlags::OBJECT_LAYOUT_KNOWN, [&] (std::optional<std::string_view> name, int) {
+				if (!name) {
+					static_cast<DummyRpcClass*>(parent())->time = arguments->readInt(SerialisationFlags::INT_32);
+					found = true;
+					return false;
+				}
 				if (*name == "new_time") {
 					static_cast<DummyRpcClass*>(parent())->time =
 							arguments->readInt(noFlags);
@@ -175,33 +184,33 @@ struct DummyRpcClass : IRemoteCallable {
 		void operator()(int newTime) {
 			IRpcResponder* responder = getResponder();
 			auto token = responder->send(UserId{}, this, [newTime] (IStructuredOutput& out, RequestToken) {
-				out.startWritingObject(noFlags, 1);
-				out.introduceObjectMember(noFlags, "new_time", 0);
-				out.writeInt(noFlags, newTime);
-				out.endWritingObject(noFlags);
+				out.startWritingObject(SerialisationFlags::OBJECT_LAYOUT_KNOWN, 1);
+				out.introduceObjectMember(SerialisationFlags::OBJECT_LAYOUT_KNOWN, "new_time", 0);
+				out.writeInt(SerialisationFlags::OBJECT_LAYOUT_KNOWN, newTime);
+				out.endWritingObject(SerialisationFlags::OBJECT_LAYOUT_KNOWN);
 			});
 
 			responder->getResponse(token, [&] (IStructuredInput& response) {
-				response.readNull(noFlags);
+				response.readNull(SerialisationFlags::OBJECT_LAYOUT_KNOWN);
 			});
 		}
 		void listTypes(ISerialisableDescriptionFiller&) const override {}
 		void generateDescription(IRemoteCallableDescriptionFiller& filler) const override {
-			filler.addMethod(parent()->childName(this), "Sets the time", [&] (IPropertyDescriptionFiller& filler) {
+			filler.addMethod(parent()->childName(this).first, "Sets the time", [&] (IPropertyDescriptionFiller& filler) {
 				filler.addMember("new_time", "the new time", [&] { TypedSerialiser<int>::describeType(filler); });
-			}, [&] (IPropertyDescriptionFiller& filler) { });
+			}, [&] (IPropertyDescriptionFiller&) { });
 		}
 		using IRemoteCallable::IRemoteCallable;
 	} setTime = this;
 
-	std::string_view childName(const IRemoteCallable* child) const final override {
+	std::pair<std::string_view, int> childName(const IRemoteCallable* child) const final override {
 		if (child == &getMessage)
-			return "get_message";
+			return {"get_message", 0};
 		else if (child == &setTime)
-			return "set_time";
+			return {"set_time", 1};
 		else if (child == backup && backup)
-			return "backup";
-		return "";
+			return {"backup", 2};
+		return {"", NO_SUCH_STRUCTURE};
 	}
 	const IRemoteCallable* getChild(std::string_view name) const final override {
 		if (name == "get_message")
@@ -211,6 +220,16 @@ struct DummyRpcClass : IRemoteCallable {
 		else if (name == "backup" && backup)
 			return backup;
 		std::cout << "Cant find " << name << std::endl;
+		return nullptr;
+	}
+	const IRemoteCallable* getChild(int index) const final override {
+		if (index == 0)
+			return &getMessage;
+		else if (index == 1)
+			return &setTime;
+		else if (index == 2 && backup)
+			return backup;
+		std::cout << "Cant find child number " << index << std::endl;
 		return nullptr;
 	}
 
@@ -374,7 +393,15 @@ int main(int argc, char** argv) {
 	};
 	auto doATestBinary = [&] (auto is, auto shouldBe) {
 		tests++;
-		if (is != shouldBe) {
+		bool equal = (std::ssize(is), std::ssize(shouldBe));
+		if (equal) {
+			for (int i = 0; i < std::ssize(is); i++)
+				if (is[i] != shouldBe[i]) {
+					equal = false;
+					break;
+				}
+		}
+		if (!equal) {
 			errors++;
 			std::cout << "Test failed: " << std::endl;
 			for (auto it : is) {
@@ -968,7 +995,7 @@ R"~(<!doctype html>
 
 		rpcTestAssigned.clear();
 		InlineMethod inlineMethod;
-		inlineMethod.setResponder(&http);
+		inlineMethod.setResponder(http);
 		client.response = expectedPostResponse;
 		inlineMethod("Götterdämerung! End is comiňg!");
 		doATestIgnoringWhitespace(client.request, expectedPost);
@@ -1019,7 +1046,7 @@ R"~(<!doctype html>
 
 			Fixture(const std::string& html) {
 				getResponder.resource = html;
-				methodClient.setResponder(&httpClient);
+				methodClient.setResponder(httpClient);
 			}
 
 		};
@@ -1074,7 +1101,7 @@ R"~(<!doctype html>
 		auto fixture = makeHttpTestFixture();
 		std::atomic_int totalRequests = 0;
 		auto workload = [&] () {
-			std::array<Bomba::RequestToken, 20000> requests = {};
+			std::array<Bomba::RequestToken, 50000> requests = {};
 			Bomba::SyncNetworkClient client = {fixture.targetAddress, fixture.targetPort};
 			Bomba::HttpClient<> httpClient = {client, fixture.targetAddress};
 			
@@ -1503,7 +1530,7 @@ R"~({
 		std::cout << "Testing binary format write" << std::endl;
 		ManualBinary expected;
 		std::string output;
-		BinaryProtocol<>::Output out(output);
+		BinaryFormat<>::Output out(output);
 
 		out.writeBool(noFlags, true);
 		expected.add(true);
@@ -1524,7 +1551,7 @@ R"~({
 		ManualBinary expected;
 		std::string output;
 
-		BinaryProtocol<>::Output out(output);
+		BinaryFormat<>::Output out(output);
 		{
 			auto writer = out.writeArray(2);
 			expected.add(int16_t(2));
@@ -1568,7 +1595,7 @@ R"~({
 		expected.add(true);
 		expected.addString(obj.contents);
 
-		std::string output = obj.serialise<BinaryProtocol<>>();
+		std::string output = obj.serialise<BinaryFormat<>>();
 		doATestBinary(output, expected.str);
 	}
 
@@ -1583,7 +1610,7 @@ R"~({
 		constexpr std::string_view testString = "It confirms my biases!";
 		reading.addString(testString);
 
-		BinaryProtocol<>::Input in(reading.str);
+		BinaryFormat<>::Input in(reading.str);
 		doATest(in.readBool(noFlags), false);
 		doATest(in.readInt(SerialisationFlags::INT_8), -9);
 		doATest(in.readInt(SerialisationFlags::INT_32), -444);
@@ -1609,7 +1636,7 @@ R"~({
 		reading.addString(testString);
 		reading.add(int32_t(182));
 
-		BinaryProtocol<>::Input in(reading.str);
+		BinaryFormat<>::Input in(reading.str);
 		in.startReadingArray(noFlags);
 		doATest(in.readInt(SerialisationFlags::INT_8), -7);
 		doATest(in.nextArrayElement(noFlags), true);
@@ -1661,11 +1688,237 @@ R"~({
 		reading.addString(obj.contents);
 		obj.contents = "This is so wrong";
 
-		obj.deserialise<BinaryProtocol<>>(reading.str);
+		obj.deserialise<BinaryFormat<>>(reading.str);
 		doATest(obj.index, 9);
 		doATest(obj.subIndex, 12);
 		doATest(obj.deleted, false);
 		doATest(obj.contents, StandardObject().contents);
+	}
+
+	ManualBinary binaryRequest1;
+	constexpr int binaryRequestSize1 = 4 + 2 + 1 + sizeof(int);
+	binaryRequest1.add(uint32_t(0)); // First message
+	binaryRequest1.add(uint16_t(binaryRequestSize1)); // Size
+	binaryRequest1.add(uint8_t(1)); // Request to method 1
+	binaryRequest1.add(int(100)); // Argument value is 100
+
+	ManualBinary binaryResponse1;
+	binaryResponse1.add(uint32_t(0)); // First message
+	binaryResponse1.add(uint16_t(4 + 2)); // Size
+
+	ManualBinary binaryRequest2;
+	int binaryRequestSize2 = 4 + 2 + 1;
+	binaryRequest2.add(uint32_t(1)); // Second message
+	binaryRequest2.add(uint16_t(binaryRequestSize2)); // Size
+	binaryRequest2.add(uint8_t(0)); // Request to method 0
+
+	ManualBinary binaryResponse2;
+	constexpr std::string_view textInBinary = "Cens";
+	binaryResponse2.add(uint32_t(1)); // Second message
+	binaryResponse2.add(uint16_t(4 + 2 + 2 + textInBinary.size())); // Size
+	binaryResponse2.addString(textInBinary);
+
+	{
+		std::cout << "Testing binary RPC server" << std::endl;
+		DummyRpcClass api;
+		BinaryProtocolServer<> server(api);
+		api.message = textInBinary;
+
+		{
+
+			auto session = server.getSession();
+			bool called = false;
+			auto callResult = session.respond(std::span<char>(binaryRequest1.str.begin(), binaryRequest1.str.end()), [&] (std::span<const char> response) {
+				doATestBinary(response, binaryResponse1.str);
+				called = true;
+			});
+			doATest(called, true);
+			doATest(int(callResult.first), int(ServerReaction::OK));
+			doATest(callResult.second, binaryRequestSize1);
+		}
+
+		{
+
+			auto session = server.getSession();
+			bool called = false;
+			auto callResult = session.respond(std::span<char>(binaryRequest2.str.begin(), binaryRequest2.str.end()), [&] (std::span<const char> response) {
+				doATestBinary(response, binaryResponse2.str);
+				called = true;
+			});
+			doATest(called, true);
+			doATest(int(callResult.first), int(ServerReaction::OK));
+			doATest(callResult.second, binaryRequestSize2);
+		}
+	}
+
+	{
+		std::cout << "Testing binary RPC client" << std::endl;
+		DummyRpcClass api;
+		FakeClient fakeTcpClient;
+		BinaryProtocolClient<> client(api, fakeTcpClient);
+
+		{
+			fakeTcpClient.response = binaryResponse1.str;
+			api.setTime(100);
+			doATestBinary(fakeTcpClient.request, binaryRequest1.str);
+		}
+
+		{
+			fakeTcpClient.response = binaryResponse2.str;
+			doATestBinary(api.getMessage(), textInBinary);
+			doATestBinary(fakeTcpClient.request, binaryRequest2.str);
+		}
+
+	}
+
+	{
+		std::cout << "Testing binary RPC high level" << std::endl;
+		AdvancedRpcClass clientApi;
+		FakeClient fakeTcpClient;
+		BinaryProtocolClient<> client(clientApi, fakeTcpClient);
+		std::string message = "Sssh, listen...";
+
+		ManualBinary expectedResponse;
+		constexpr int expectedResponseSize = 4 + 2;
+		expectedResponse.add(uint32_t(0)); // First message
+		expectedResponse.add(uint16_t(expectedResponseSize)); // Size
+		fakeTcpClient.response = expectedResponse.str;
+
+		clientApi.setMessage(message);
+
+		AdvancedRpcClass serverApi;
+		BinaryProtocolServer<> server(serverApi);
+		auto serverSession = server.getSession();
+		std::string serverResponse;
+
+		auto callResult = serverSession.respond(std::span<char>(fakeTcpClient.request.begin(), fakeTcpClient.request.end()),
+					[&] (std::span<const char> response) {
+			serverResponse.append(response.data(), response.size());
+		});
+
+		doATestBinary(expectedResponse.str, serverResponse);
+		doATest(serverApi.message, message);
+	}
+
+	static std::string statelessLambdaString = "";
+	Bomba::RpcStatelessLambda<[] (std::string newString = Bomba::name("update")) {
+		std::swap(statelessLambdaString, newString);
+		return newString;
+	}> standaloneMethod;
+
+	{
+		std::cout << "Testing single-method binary RPC" << std::endl;
+		decltype(standaloneMethod) clientApi;
+		FakeClient fakeTcpClient;
+		BinaryProtocolClient<> client(clientApi, fakeTcpClient);
+
+		ManualBinary expectedResponse;
+		constexpr int expectedResponseSize = 4 + 2 + 2;
+		expectedResponse.add(uint32_t(0)); // First message
+		expectedResponse.add(uint16_t(expectedResponseSize)); // Size
+		expectedResponse.add(uint16_t(0)); // Empty string
+		fakeTcpClient.response = expectedResponse.str;
+
+		std::string announcement = "Birds are robots";
+		clientApi(announcement);
+
+		decltype(standaloneMethod) serverApi;
+		BinaryProtocolServer<> server(serverApi);
+		auto serverSession = server.getSession();
+		std::string serverResponse;
+
+		auto callResult = serverSession.respond(std::span<char>(fakeTcpClient.request.begin(), fakeTcpClient.request.end()),
+					[&] (std::span<const char> response) {
+			serverResponse.append(response.data(), response.size());
+		});
+
+		doATestBinary(expectedResponse.str, serverResponse);
+		doATest(announcement, statelessLambdaString);
+	}
+
+	auto makeBinaryTestFixture = [&] {
+		struct Fixture {
+			AdvancedRpcClass serverApi;
+			BinaryProtocolServer<> binaryServer = {serverApi};
+			Bomba::BackgroundTcpServer<decltype(binaryServer)> server = {binaryServer, 8901}; // Very unlikely this port will be used for something
+
+			AdvancedRpcClass clientApi;
+			std::string targetAddress = "0.0.0.0";
+			std::string targetPort = "8901";
+			Bomba::SyncNetworkClient client = {targetAddress, targetPort};
+			BinaryProtocolClient<> binaryClient = {clientApi, client};
+		};
+		return Fixture();
+	};
+
+	{
+		std::cout << "Testing binary RPC loop on localhost" << std::endl;
+		auto fixture = makeBinaryTestFixture();
+		fixture.clientApi.setMessage("Take the red pill");
+		doATest(fixture.serverApi.message, "Take the red pill");
+
+		Future<std::string> future = fixture.clientApi.getMessage();
+		while (!future.is_ready()) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		doATest(future.get(), "Take the red pill");
+	}
+
+	{
+		std::cout << "Testing binary RPC out of order" << std::endl;
+		auto fixture = makeBinaryTestFixture();
+
+		fixture.serverApi.message = "Don't be a blue pill.";
+		Future<std::string> future1 = fixture.clientApi.getMessage();
+		fixture.serverApi.message = "Hobbies are for normies.";
+		Future<std::string> future2 = fixture.clientApi.getMessage();
+		fixture.serverApi.message = "Obsess with fictional problems.";
+		Future<std::string> future3 = fixture.clientApi.getMessage();
+		// Should not throw exceptions nor get stuck
+		doATest(future3.get(), "Obsess with fictional problems.");
+		doATest(future2.get(), "Hobbies are for normies.");
+		doATest(future1.get(), "Don't be a blue pill.");
+	}
+
+	{
+		std::cout << "Internally benchmarking binary RPC server...";
+		auto fixture = makeBinaryTestFixture();
+		for (int i = 0; i < 2000; i++) {
+			fixture.clientApi.sum(12, 35);
+		}
+		std::cout << " average response time is " << fixture.server.averageResponseTime().count() << " ns per packet" << std::endl;
+	}
+
+	{
+		std::cout << "Asynchronously benchmarking binary RPC server...";
+		auto fixture = makeBinaryTestFixture();
+		std::atomic_int totalRequests = 0;
+		auto workload = [&] () {
+			std::array<Future<int>, 50000> requests = {};
+			Bomba::SyncNetworkClient client = {fixture.targetAddress, fixture.targetPort};
+			AdvancedRpcClass clientApi;
+			BinaryProtocolClient<> binaryClient = {clientApi, client};
+
+			for (Future<int>& future : requests)
+				future = clientApi.sum.async(15, 25);
+			// We don't have enough threads to wait for each response individually
+			for (Future<int>& future : requests) {
+				future.get();
+				totalRequests++;
+			}
+		};
+		auto startTime = std::chrono::steady_clock::now();
+		{
+			std::vector<std::jthread> workers;
+			for (int i = 0; i < 5; i++)
+				workers.emplace_back(workload);
+			// Destructors wait until they finish
+		}
+		auto endTime = std::chrono::steady_clock::now();
+		int average = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime).count() / totalRequests;
+
+		std::cout << " average response time is " << average << " ns per request, " <<
+					fixture.server.averageResponseTime().count() << " ns reported internally" << std::endl;
 	}
 
 	std::cout << "Passed: " << (tests - errors) << " / " << tests << ", errors: " << errors << std::endl;
