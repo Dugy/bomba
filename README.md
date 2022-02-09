@@ -25,10 +25,8 @@ const [api, types] = await bomba.loadApi("0.0.0.0:8080");
 api.notify_me("If you see this, it's working.", true);
 ```
 
-Connecting to it through the browser can automatically generate a GUI like this:
+Connecting to it through the browser can automatically generate the code for calling `notify_me()`. To allow convenient access with minimum work, it can also generate a GUI like this:
 ![](screenshot.png)
-
-Alternatively, a custom page can call `notify_me()`.
 
 ## Features
 Bomba is fully usable, but some additional features are planned.
@@ -55,7 +53,7 @@ Currently, there are two networking related classes:
 	* It's possible to check if the response was already received, eliminating the need to block entirely
 
 ### Performance
-As a side effect of restricting dynamic allocation for embedded-friendliness, the library has very good performance. JMeter reports about 60'000 HTTP requests per second singlethreaded on a laptop CPU with turbo boost disabled (which is about twice the performance of Nginx), but this is mainly a limit of the networking interface. Internally measured time to parse and respond to a request is lower. Under particularly favourable circumstances, the throughput can reach 1'000'000 packets per second per second singlethreaded. Calling a function via JSON-RPC adds about 1 microsecond to the processing time.
+As a side effect of restricting dynamic allocation for embedded-friendliness, the library has very good performance. JMeter reports about 60,000 HTTP requests per second singlethreaded on a laptop CPU with turbo boost disabled (which is about twice the performance of Nginx), but this is mainly a limit of the networking interface. Internally measured time to parse and respond to a request is lower. Under particularly favourable circumstances, the throughput can reach 1,000,000 packets per second per second singlethreaded. Calling a function via JSON-RPC adds about 1 microsecond to the processing time.
 
 ## Error handling
 Common problems like incomplete requests in receive buffers are handled by returning enums for these kinds of calls, either alone or as part of `std::pair` or `std::tuple` with other values.
@@ -570,3 +568,38 @@ Bomba::HttpServer<Bomba::NonExpandingBuffer<2048>> jsonRpcServer = {&method};
 The `JsonRpcServer` class will create its own `HttpServer` with the buffer type determined by the value of its second template argument (i.e. `JsonRpcServer<std::string, NonExpandingBuffer<2048>>`).
 
 This does not affect cases where a resource with already known size is downloaded, because it doesn't need to keep the header in memory.
+
+### Custom components
+Bomba is designed with modularity in mind and almost any layer can be replaced by a different component. Parts that can be replaced by reimplementing an interface differently:
+* Data format
+* Message format
+* Network protocol
+
+#### Custom object encoding
+A format should be a `struct` with two subobjects, `Input` and `Output`, implementing interfaces `IStructruredInput` and `IStructuredOutput` respectively. It's intended that some adjustments to the format could be supplied to it as template arguments to the outer struct.
+
+It's clear that not all formats support everything defined by the interface, but an interface supporting only numbers and strings is good enough for serialising numbers and strings.
+
+These interfaces are defined in `bomba_core.hpp` with comments explaining how to implement them. Their methods take flags as arguments (declared in `bomba_core.hpp`), which specify some details that are needed only by some implementations.
+
+These interfaces are quite low level and are not meant to be used outside of higher level abstractions. The `Serialisable` class hides them completely and also adds appropriate flags.
+
+The format is abstracted roughly in the style of variables of dynamically typed variables:
+* Floating point number
+* Integer
+* Boolean
+* String
+* Null
+* Array of variables (can be different types, but it would be impractical to use)
+* String-indexed table of variables (can map to a C++ object or an map-like type)
+* Optional (currently not implemented well, but works for JSON)
+
+#### Custom message format
+To implement a server, it's necessary to create a class that has a public method called `getSession()` that returns an object implementing the `ITcpResponder` interface. This interface must have a `respond()` method that parses incoming data, uses a callback to send responses back and return whether the communication is okay and how many bytes it read will not need again. This interface is defined and better explained in `bomba_core.hpp`.
+
+To implement a client, it's necessary to implement the `IRpcResponder` interface defined in `bomba_core.hpp`.
+
+#### Custom network protocol
+The part of the server code that responds to input is defined by the `ITcpResponder` interface. A custom implementation can use it differently. For UDP, it's better to change it together with the message format. It's defined in `bomba_core.hpp`.
+
+A client is somewhat harder to implement because responses might not arrive in the order they are requested. It needs to implement the `ITcpClient` interface, which requires an ability to identify which response is the required one and let the calling code keep the others. It's defined in `bomba_core.hpp`.

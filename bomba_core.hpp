@@ -103,13 +103,15 @@ struct Float16Placeholder {
 };
 
 namespace SerialisationFlags {
+	// Flags for altering the behaviour of ISerialisedOutput and ISerialisedInput interfaces
 	enum Flags {
-		NONE = 0,
-		NOT_CHILD = 0x1,
-		MANDATORY = 0x2,
-		OMIT_FALSE = 0x4,
-		EMPTY_IS_NULL = 0x8,
+		NONE = 0, // No flags, default value
+		OBJECT_LAYOUT_KNOWN = 0x1, // Declares that the data is a known type and doesn't need names of elements
+		MANDATORY = 0x2, // Fail instead of returning default values even if the format supports it (not implemented)
+		OMIT_FALSE = 0x4, // Skip the entry if it's bool and it's false
+		EMPTY_IS_NULL = 0x8, // Skip the entry if it's null
 
+		// Declare the specific numeric type for formats where it matters (mutually exclusive)
 		INT_8 = 0x100,
 		UINT_8 = 0x110,
 		INT_16 = 0x120,
@@ -121,9 +123,7 @@ namespace SerialisationFlags {
 		FLOAT_16 = 0x180,
 		FLOAT_32 = 0x190,
 		FLOAT_64 = 0x1a0,
-		DETERMINED_NUMERIC_TYPE = 0x1f0,
-
-		OBJECT_LAYOUT_KNOWN = 0x200,
+		DETERMINED_NUMERIC_TYPE = 0x1f0, // Has all the bits used by numeric types at 1
 	};
 
 	template <typename T>
@@ -168,25 +168,42 @@ struct TypedSerialiser {
 };
 
 struct IStructuredOutput {
+	// Used by code that writes data or messages, implement it to create an output format
 	using Flags = SerialisationFlags::Flags;
 
+	// Writes an integer to the output
 	virtual void writeInt(Flags flags, int64_t value) = 0;
+	// Writes a floating-point number to the output
 	virtual void writeFloat(Flags flags, double value) = 0;
+	// Writes a string to the output
 	virtual void writeString(Flags flags, std::string_view value) = 0;
+	// Writes a boolean variable to the output
 	virtual void writeBool(Flags flags, bool value) = 0;
+	// Writes a null value to the output
 	virtual void writeNull(Flags flags) = 0;
 	
+	// Array is written as startWritingArray, [introduceObjectElement, writeInt (or any other type)], endWritingArray
 	constexpr static int UNKNOWN_SIZE = -1;
+	// Called just before writing an array, if size is not known in advance, UNKNOWN_SIZE is used as size
 	virtual void startWritingArray(Flags flags, int size) = 0;
+	// Called before writing the value of any array element
 	virtual void introduceArrayElement(Flags flags, int index) = 0;
+	// Called after writing the last value in the array
 	virtual void endWritingArray(Flags flags) = 0;
 	
+	// Object is written as startWritingObject, [introduceObjectMember, writeInt (or any other type], endWritingObject
+	// Called just before writing an object, if number of elements is not known in advance, UNKNOWN_SIZE is used as size
 	virtual void startWritingObject(Flags flags, int size) = 0;
+	// Called before writing the value of any object element, name of element is needed (otherwise it's an array)
 	virtual void introduceObjectMember(Flags flags, std::string_view name, int index) = 0;
+	// Called after writing the last value in the object
 	virtual void endWritingObject(Flags flags) = 0;
+
+	// TODO: Add optional
 
 	virtual ~IStructuredOutput() = default;
 
+	// Convenience classes and methods for using this interface in a less error prone way
 	class ArrayFiller {
 		int _index = 0;
 		IStructuredOutput& _output;
@@ -286,6 +303,7 @@ struct NullStructredOutput : IStructuredOutput {
 };
 
 struct IStructuredInput {
+	// Used by code that reads data or messages, implement it to create an input format
 	using Flags = SerialisationFlags::Flags;
 	
 	enum MemberType {
@@ -301,19 +319,33 @@ struct IStructuredInput {
 	
 	bool good = true;
 	
+	// Should return the type of the following element
 	virtual MemberType identifyType(Flags flags) = 0;
 	
+	// Should parse an integer and return it (exact type may be supplied in flags)
 	virtual int64_t readInt(Flags flags) = 0;
+	// Should parse a floating point number and return it (exact type may be supplied in flags)
 	virtual double readFloat(Flags flags) = 0;
+	// Should parse a string and return a view of it (size type may be supplied in flags)
 	virtual std::string_view readString(Flags flags) = 0;
+	// Should parse a boolean and return it
 	virtual bool readBool(Flags flags) = 0;
+	// Should read a null (only to get the reading position behind it)
 	virtual void readNull(Flags flags) = 0;
 	
+	// Should read an array, will be called as startReadingArray, [nextArrayElement, readInt (or something else)], endReadingArray
+	// Should start reading an array
 	virtual void startReadingArray(Flags flags) = 0;
+	// Should read the introduction of the next array element, returns if it's the last element
 	virtual bool nextArrayElement(Flags flags) = 0;
+	// Should end reading an array
 	virtual void endReadingArray(Flags flags) = 0;
+	// TODO: Refactor to more functional style
 	
+	// Should read an object, calling the supplied callback on each element, with name (if available) and index
+	// Should end on the last element and when the callback returns 0
 	virtual void readObject(Flags flags, Callback<bool(std::optional<std::string_view> memberName, int index)> onEach) = 0;
+	// Skips the next value
 	virtual void skipObjectElement(Flags flags) = 0;
 	
 	struct Location {
@@ -323,7 +355,9 @@ struct IStructuredInput {
 			return (loc != UNINITIALISED);
 		}
 	};
+	// Should return the current position to be returned there later
 	virtual Location storePosition(Flags flags) = 0;
+	// Should come back to a previously stored position
 	virtual void restorePosition(Flags flags, Location location) = 0;
 };
 
@@ -548,23 +582,39 @@ concept DataFormat = std::is_base_of_v<IStructuredOutput, typename T::Output>
 		&& std::is_base_of_v<IStructuredInput, typename T::Input>;
 
 struct IPropertyDescriptionFiller {
+	// Implementing this interface adds a new format for describing structures of objects
+
+	// Should introduce a new member with the given name and description and call the functor when it's ready
 	virtual void addMember(std::string_view name, std::string_view description, Callback<> writer) = 0;
+	// Should add an integer type to the description
 	virtual void addInteger() = 0;
+	// Should add a floating point type to the description
 	virtual void addFloat() = 0;
+	// Should add a boolean type to the description
 	virtual void addBoolean() = 0;
+	// Should add a string type to the description
 	virtual void addString() = 0;
+	// Should add an optional type to the description and use the functor to fill it
 	virtual void addOptional(Callback<void(IPropertyDescriptionFiller&)> filler) = 0;
+	// Should add an array type to the description and use the functor to fill it
 	virtual void addArray(Callback<void(IPropertyDescriptionFiller&)> filler) = 0;
+	// Should add an already defined object type to the description with the given name and use the functor to fill it
 	virtual void addSubobject(std::optional<std::string_view> typeName,
 			Callback<void(IPropertyDescriptionFiller&)> filler) = 0;
 };
 
 struct ISerialisableDescriptionFiller {
+	// Implementing this interface adds a new format for describing nested structures of objects
+
+	// Should add another type, usually nested type, using the provided functor
 	virtual void addMoreTypes(Callback<void(ISerialisableDescriptionFiller&)> otherFiller) = 0;
+	// Should start describing the current type, with the given name and using the functor in argument
 	virtual void fillMembers(std::string_view name, Callback<void(IPropertyDescriptionFiller&)> filler) = 0;
 };
 	
 struct ISerialisable {
+	// Represents a class that can be serialised and deserialised, usually implemented by Serialisable in bomba_object.hpp
+
 	template <DataFormat F>
 	std::string serialise() {
 		std::string output;
@@ -587,8 +637,10 @@ struct ISerialisable {
 	}
 
 protected:
+	// Should write the structure's contents using the output format object
 	virtual void serialiseInternal(IStructuredOutput& format,
 			SerialisationFlags::Flags flags = SerialisationFlags::NONE) const = 0;
+	// Should update the structure's contents using the input format object
 	virtual bool deserialiseInternal(IStructuredInput& format,
 			SerialisationFlags::Flags flags = SerialisationFlags::NONE) = 0;
 
@@ -609,17 +661,30 @@ struct IDescribableSerialisable : ISerialisable {
 };
 
 struct IMethodDescriptionFiller {
+	// Implementing this allows adding parameters to autogenerated remote method description for a custom description format
+
+	// Should add a parameter to the description
 	virtual void addParameter(std::string_view name, std::string_view type, std::string_view description, bool mandatory) = 0;
 };
 
 struct IRemoteCallableDescriptionFiller {
+	// Implementing this allows adding methods and internally used objects to autogenerated method descruption for a new format
+
+	// Should add a new method with the given name and description, using the provided interface to describe arguments and return values
 	virtual void addMethod(std::string_view name, std::string_view description,
 			Callback<void(IPropertyDescriptionFiller&)> paramFiller, Callback<void(IPropertyDescriptionFiller&)> returnFiller) = 0;
+	// Should add a new internally used object with the given name, using the interface provided by the functor
 	virtual void addSubobject(std::string_view name, Callback<void(IRemoteCallableDescriptionFiller&)> nestedFiller) = 0;
 };
 
 struct IWriteStarter {
+	// An implementation of this interface should be provided by a class that can deal with both messages whose size is known
+	// before writing and whose is determined by the write. The purpose is to allow both sending responses whose size is determined
+	// by serialisation and downloading large files that are usually streamed, while the message needs to start with size.
+
+	// Should prepare a buffer whose size will grow or is large enough and call the callback on it
 	virtual void writeUnknownSize(std::string_view resourceType, Callback<void(GeneralisedBuffer&)> filler) = 0;
+	// Should prepare a buffer for a message whose size is known in advance and call the callback on it
 	virtual void writeKnownSize(std::string_view resourceType, int64_t size, Callback<void(GeneralisedBuffer&)> filler) = 0;
 };
 
@@ -640,15 +705,25 @@ struct RequestToken {
 };
 
 struct IRpcResponder {
+	// Implementing this interface creates clients for a message type
+
+	// Should serialise a message from a given user from a given method, supplying the output format and identifier to the callback
 	virtual RequestToken send(UserId user, const IRemoteCallable* method,
 			Callback<void(IStructuredOutput&, RequestToken)> request) = 0;
+	// Should look for a response with a given identifier, construct a parser for it and call the callback on the parser
 	virtual bool getResponse(RequestToken token, Callback<void(IStructuredInput&)> reader) = 0;
+	// Should decide if a response with the given identifier is already available and can be accessed without waiting
 	virtual bool hasResponse(RequestToken) {
 		return true; // If not sufficiently async, it's sort of always available and getting it causes it to wait
 	}
+
+	// TODO: Add a way to discard a response and make the polling code call it when destroyed, or forgotten responses will pile up
 };
 
 class IRemoteCallable {
+	// Implementing the virtual methods in this class will create a custom callable object
+	// Doing so is not very practical without something like RPC lambda in bomba_rpc_object.hpp
+
 	IRemoteCallable* _parent = nullptr;
 	IRpcResponder* _responder = nullptr;
 protected:
@@ -680,27 +755,34 @@ public:
 		_responder = &responder;
 	}
 	
+	// Should call the function with a prepared input of arguments assumed to be object members (or null), prepared output,
+	// a functor that starts writing the result, a functor that writes an error message and a user identifier (or nullopt)
 	virtual bool call([[maybe_unused]] IStructuredInput* arguments, [[maybe_unused]] IStructuredOutput& result,
 			[[maybe_unused]] Callback<> introduceResult, [[maybe_unused]] Callback<void(std::string_view)> introduceError,
 			[[maybe_unused]] std::optional<UserId> user = std::nullopt) const {
 		return false;
 	}
+	// Should return the pointer to a child callable with a certain name (recursive access is handled elsewhere)
 	virtual const IRemoteCallable* getChild([[maybe_unused]] std::string_view name) const {
 		return nullptr;
 	}
+	// Should return the pointer to a child callable with a certain index (recursive access is handled elsewhere)
 	virtual const IRemoteCallable* getChild([[maybe_unused]] int index) const {
 		return nullptr;
 	}
 
+	// Returns the name and index of a child with a certain address (to allow a callable to identify itself)
 	constexpr static int NO_SUCH_STRUCTURE = -1;
 	virtual std::pair<std::string_view, int> childName([[maybe_unused]] const IRemoteCallable* child) const {
 		logicError("No such structure");
 		return {"", NO_SUCH_STRUCTURE};
 	}
 	
+	// Uses the supplied interface to describe all composed types used by this function
 	virtual void listTypes([[maybe_unused]] ISerialisableDescriptionFiller& filler) const {
 		// Not supported if not overloaded, does nothing
 	}
+	// Use the supplied interface to describe the function, its arguments and its return type
 	virtual void generateDescription([[maybe_unused]] IRemoteCallableDescriptionFiller& filler) const {
 		// Not supported if not overloaded, does nothing
 	}
@@ -763,9 +845,21 @@ enum class ServerReaction {
 };
 
 struct ITcpClient {
+	// Interface for networking clients that communicate using streams, should be able to store identified responses
+	// that were not accessed yet
+
+	// Should write the buffer in argument into the stream
 	virtual void writeRequest(std::span<char> written) = 0;
+
+	// Should look for a response with the identifier in the stream or an already identified response, using the supplied functor
+	// that parses the stream, taking chunks of data and a flag whether it's already identified, returning information whether it's
+	// the right message, or it's a wrong one, or incomplete, or if the stream is corrupted, plus the parsed message's identifier
+	// (if identified) and the size of the message it read (if it could read a message). The functor shall parse zero or one message.
 	virtual void getResponse(RequestToken token, Callback<std::tuple<ServerReaction, RequestToken, int64_t>
 			(std::span<char> input, bool identified)> reader) = 0;
+
+	// Should look for a response with the identifier in the stream, similarly to getResponse(), but without processing
+	// the actual response. Intended for periodically polling if a response has arrived. Must be fast if called token.
 	virtual void tryToGetResponse(RequestToken token, Callback<std::tuple<ServerReaction, RequestToken, int64_t>
 			(std::span<char> input, bool identified)> reader) {
 		getResponse(token, reader);
@@ -773,6 +867,10 @@ struct ITcpClient {
 };
 
 struct ITcpResponder {
+	// Interface for classes that can respond to streams of requests.
+
+	// Should take a chunk of data and a functor that sends chunks of data and return whether the data is okay or corrupted
+	// and the number of bytes read (the functor can be called as many times as needed)
 	virtual std::pair<ServerReaction, int64_t> respond(
 				std::span<char> input, Callback<void(std::span<const char>)> writer) = 0;
 };
