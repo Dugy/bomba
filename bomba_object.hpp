@@ -312,7 +312,12 @@ class Serialisable : public IDescribableSerialisable {
 		
 		template <typename T, size_t... Enumeration>
 		T makeType(std::index_sequence<Enumeration...>) const {
-			return T(std::get<Enumeration>(_args)...);
+			if constexpr(SerialisableOptionalBase<T> && SerialisableOptionalOrSmartPointer<T>
+							&& !std::is_constructible_v<T, decltype(std::get<Enumeration>(_args))...>) {
+				T value;
+				value = std::decay_t<decltype(*value)>(std::get<Enumeration>(_args)...);
+				return value;
+			} else return T(std::get<Enumeration>(_args)...);
 		}
 	public:
 #if _MSC_VER && !__INTEL_COMPILER

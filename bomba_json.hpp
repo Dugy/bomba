@@ -240,6 +240,16 @@ struct BasicJson {
 			} while (_contents.begin() + _position < _contents.end());
 		}
 
+		bool readOptional(Flags flags, Callback<> readValue) override {
+			if (identifyType(flags) != IStructuredInput::TYPE_NULL) {
+				readValue();
+				return true;
+			} else {
+				readNull(flags);
+				return false;
+			}
+		}
+
 		Location storePosition(Flags) final override {
 			return Location{ _position };
 		}
@@ -332,6 +342,13 @@ struct BasicJson {
 			_depth--;
 			newLine();
 			_contents += '}';
+		}
+
+		void writeOptional(Flags flags, bool present, Callback<> writeValue) final override {
+			if (!present)
+				writeNull(flags);
+			else
+				writeValue();
 		}
 	};
 };

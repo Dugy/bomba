@@ -171,15 +171,15 @@ struct IStructuredOutput {
 	// Used by code that writes data or messages, implement it to create an output format
 	using Flags = SerialisationFlags::Flags;
 
-	// Writes an integer to the output
+	// Should write an integer to the output
 	virtual void writeInt(Flags flags, int64_t value) = 0;
-	// Writes a floating-point number to the output
+	// Should write a floating-point number to the output
 	virtual void writeFloat(Flags flags, double value) = 0;
-	// Writes a string to the output
+	// Should write a string to the output
 	virtual void writeString(Flags flags, std::string_view value) = 0;
-	// Writes a boolean variable to the output
+	// Should write a boolean variable to the output
 	virtual void writeBool(Flags flags, bool value) = 0;
-	// Writes a null value to the output
+	// Should write a null value to the output
 	virtual void writeNull(Flags flags) = 0;
 	
 	// Array is written as startWritingArray, [introduceObjectElement, writeInt (or any other type)], endWritingArray
@@ -199,7 +199,8 @@ struct IStructuredOutput {
 	// Called after writing the last value in the object
 	virtual void endWritingObject(Flags flags) = 0;
 
-	// TODO: Add optional
+	// Should write an optional value, empty if it's absent and calling the callback to write the value if present
+	virtual void writeOptional(Flags flags, bool present, Callback<> writeValue) = 0;
 
 	virtual ~IStructuredOutput() = default;
 
@@ -300,6 +301,8 @@ struct NullStructredOutput : IStructuredOutput {
 	void startWritingObject(Flags, int) final override {}
 	void introduceObjectMember(Flags, std::string_view, int) final override {}
 	void endWritingObject(Flags) final override {}
+
+	void writeOptional(Flags, bool, Callback<>) final override {}
 };
 
 struct IStructuredInput {
@@ -347,6 +350,9 @@ struct IStructuredInput {
 	virtual void readObject(Flags flags, Callback<bool(std::optional<std::string_view> memberName, int index)> onEach) = 0;
 	// Skips the next value
 	virtual void skipObjectElement(Flags flags) = 0;
+
+	// Should call the functor on the value if it's present and return if it was present
+	virtual bool readOptional(Flags flags, Callback<> readValue) = 0;
 	
 	struct Location {
 		constexpr static int UNINITIALISED = -1;
@@ -1124,6 +1130,29 @@ struct TypedSerialiser<Map> {
 	};
 };
 
+template <typename T>
+struct Optional : public std::optional<T>  {
+	Optional() : std::optional<T>() {}
+	Optional(std::nullopt_t) : std::optional<T>(std::nullopt) {}
+	Optional(const Optional<T>&) = default;
+	Optional(Optional<T>&&) = default;
+	Optional<T>& operator=(const T& value) { std::optional<T>::operator=(value); return *this; }
+	Optional<T>& operator=(T&& value) { std::optional<T>::operator=(value); return *this; }
+	Optional<T>& operator=(const std::optional<T>& value) { std::optional<T>::operator=(value); return *this; }
+	Optional<T>& operator=(std::optional<T>&& value) { std::optional<T>::operator=(value); return *this; }
+	Optional<T>& operator=(const Optional<T>& value) { std::optional<T>::operator=(value); return *this; }
+	Optional<T>& operator=(Optional<T>&& value) { std::optional<T>::operator=(value); return *this; }
+
+	template <typename T2, typename... Args> friend Optional<T2> makeOptional(Args&&... args);
+};
+
+template <typename T2, typename... Args>
+Optional<T2> makeOptional(Args&&... args) {
+	Optional<T2> made;
+	made = T2(args...);
+	return std::move(made);
+}
+
 template <typename P>
 concept SerialisableSmartPointerBase = requires(P p, std::decay_t<decltype(*p)>* raw) {
 	P(raw);
@@ -1131,7 +1160,7 @@ concept SerialisableSmartPointerBase = requires(P p, std::decay_t<decltype(*p)>*
 
 template <typename P>
 concept SerialisableOptionalBase = requires(P p, std::decay_t<decltype(*p)> instance) {
-	P(instance);
+	p = instance;
 };
 
 template <typename P>
@@ -1155,21 +1184,22 @@ template <SerialisableOptionalOrSmartPointer Ptr>
 struct TypedSerialiser<Ptr> {
 	using ValueType = std::decay_t<decltype(*std::declval<Ptr>())>;
 	static void serialiseMember(IStructuredOutput& out, const Ptr& value, SerialisationFlags::Flags flags) {
-		if (value)
-			TypedSerialiser<ValueType>::serialiseMember(out, *value, flags);
-		else
-			out.writeNull(flags);
+		out.writeOptional(flags, bool(value), [&] { TypedSerialiser<ValueType>::serialiseMember(out, *value, flags); });
 	}
 
 	static void deserialiseMember(IStructuredInput& in, Ptr& value, SerialisationFlags::Flags flags) {
-		if (in.identifyType(flags) != IStructuredInput::TYPE_NULL) {
-			if (!value)
-				value = Ptr(new std::decay_t<decltype(*value)>());
+		bool present = in.readOptional(flags, [&] {
+			if (!value) {
+				if constexpr(SerialisableSmartPointerBase<Ptr>) {
+					value = Ptr(new std::decay_t<decltype(*value)>());
+				} else if constexpr(SerialisableOptionalBase<Ptr>) {
+					value = std::decay_t<decltype(*value)>();
+				} else static_assert(std::is_same_v<Ptr, Ptr>, "This is like an optional, but neither smart pointer nor optional");
+			}
 			TypedSerialiser<ValueType>::deserialiseMember(in, *value, flags);
-		} else {
-			if (value)
-				value.reset();
-			in.readNull(flags);
+		});
+		if (!present) {
+			value.reset();
 		}
 	}
 

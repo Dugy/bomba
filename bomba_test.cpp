@@ -101,13 +101,17 @@ struct DummyObject : public IDescribableSerialisable {
 
 struct StandardObject : Serialisable<StandardObject> {
 	int index = key<"index"> = 3;
-	short int subIndex = key<"sub_index"> = 7;
+	Optional<short int> subIndex = key<"sub_index"> = std::nullopt;
 	bool deleted = key<"deleted"> = true;
 	std::string contents = key<"contents"> = "Not much yet";
 };
 
 struct SuperStandardObject : Serialisable<SuperStandardObject> {
 	StandardObject child = key<"child">;
+};
+
+struct OptionalTest : Serialisable<OptionalTest> {
+	Optional<int> value = key<"value"> = 3;
 };
 
 struct DummyRpcClass : IRemoteCallable {
@@ -609,7 +613,7 @@ int main(int argc, char** argv) {
 		std::cout << "Testing Serialisable class write" << std::endl;
 		StandardObject tested;
 		tested.index = 8;
-		tested.subIndex = 15;
+		tested.subIndex = makeOptional<short int>(15);
 		tested.contents = "Not much at this point";
 		std::string written = tested.serialise<StringJSON>();
 		doATest(written, standardObjectJson);
@@ -618,7 +622,8 @@ int main(int argc, char** argv) {
 		StandardObject tested2;
 		tested2.deserialise<JSON>(standardObjectJson);
 		doATest(tested2.index, 8);
-		doATest(tested2.subIndex, 15);
+		doATest(bool(tested2.subIndex), true);
+		doATest(*tested2.subIndex, 15);
 		doATest(tested2.deleted, true);
 		doATest(tested2.contents, "Not much at this point");
 	}
@@ -1591,7 +1596,7 @@ R"~({
 
 		StandardObject obj;
 		expected.add(3);
-		expected.add(static_cast<short int>(7));
+		expected.add(false);
 		expected.add(true);
 		expected.addString(obj.contents);
 
@@ -1683,6 +1688,7 @@ R"~({
 
 		StandardObject obj;
 		reading.add(9);
+		reading.add(true);
 		reading.add(static_cast<short int>(12));
 		reading.add(false);
 		reading.addString(obj.contents);
@@ -1690,7 +1696,8 @@ R"~({
 
 		obj.deserialise<BinaryFormat<>>(reading.str);
 		doATest(obj.index, 9);
-		doATest(obj.subIndex, 12);
+		doATest(bool(obj.subIndex), true);
+		doATest(*obj.subIndex, 12);
 		doATest(obj.deleted, false);
 		doATest(obj.contents, StandardObject().contents);
 	}

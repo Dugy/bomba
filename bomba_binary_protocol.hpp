@@ -162,7 +162,14 @@ struct BinaryFormat {
 		void skipObjectElement(Flags) final override {
 			throw std::logic_error("Can't skip elements in a binary protocol");
 		}
-		
+
+		bool readOptional(Flags flags, Callback<> readValue) override {
+			bool present = readBool(flags);
+			if (present) {
+				readValue();
+			}
+			return present;
+		}
 
 		Location storePosition(Flags) final override {
 			return Location{ _position };
@@ -222,6 +229,12 @@ struct BinaryFormat {
 			}
 		}
 		void endWritingObject(Flags) final override {
+		}
+
+		void writeOptional(Flags flags, bool present, Callback<> writeValue) final override {
+			writeBool(flags, present);
+			if (present)
+				writeValue();
 		}
 	};
 };

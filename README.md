@@ -99,6 +99,8 @@ The first template argument sets the data format. `BasicJson<>` makes it JSON. `
 
 To use different internal type than `std::string` for unescaping strings, set it as a second template argument. More on this is [here](#custom-string-type). To append the result of `serialise()` to an existing string, use its overload that accepts a reference to the output as argument. The output type is set by the second template argument, which defaults to the type of the first argument.
 
+For implementation reasons, classes with implicit conversion constructors cannot be used as a serialisable class argument this way. This is a problem for `std::optional`. There is a workaround class, `Bomba::Optional`, that inherits from `std::optional` and has no practical difference from it.
+
 ### Remote Procedure Call
 You can define an RPC function by declaring this:
 ```C++
@@ -592,7 +594,7 @@ The format is abstracted roughly in the style of variables of dynamically typed 
 * Null
 * Array of variables (can be different types, but it would be impractical to use)
 * String-indexed table of variables (can map to a C++ object or an map-like type)
-* Optional (currently not implemented well, but works for JSON)
+* Optional (can have value or be empty)
 
 #### Custom message format
 To implement a server, it's necessary to create a class that has a public method called `getSession()` that returns an object implementing the `ITcpResponder` interface. This interface must have a `respond()` method that parses incoming data, uses a callback to send responses back and return whether the communication is okay and how many bytes it read will not need again. This interface is defined and better explained in `bomba_core.hpp`.

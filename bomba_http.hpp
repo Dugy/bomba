@@ -411,6 +411,11 @@ struct HtmlMessageEncoding {
 				_position++;
 		}
 
+		bool readOptional(Flags, Callback<> readValue) override {
+			readValue(); // HTTP has no null, so if the value is present, it exists
+			return true;
+		}
+
 		Location storePosition(Flags) final override {
 			return Location{ _position };
 		}
@@ -478,6 +483,13 @@ struct HtmlMessageEncoding {
 		}
 		void endWritingObject(Flags) final override {
 			_objectIndex = OBJECT_NOT_WRITTEN;
+		}
+
+		void writeOptional(Flags flags, bool present, Callback<> writeValue) final override {
+			if (!present)
+				writeNull(flags);
+			else
+				writeValue();
 		}
 	};
 };
