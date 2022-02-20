@@ -99,7 +99,7 @@ The first template argument sets the data format. `BasicJson<>` makes it JSON. `
 
 To use different internal type than `std::string` for unescaping strings, set it as a second template argument. More on this is [here](#custom-string-type). To append the result of `serialise()` to an existing string, use its overload that accepts a reference to the output as argument. The output type is set by the second template argument, which defaults to the type of the first argument.
 
-For implementation reasons, classes with implicit conversion constructors cannot be used as a serialisable class argument this way. This is a problem for `std::optional`. There is a workaround class, `Bomba::Optional`, that inherits from `std::optional` and has no practical difference from it.
+For implementation reasons, classes with implicit conversion constructors cannot be used as a serialisable class argument this way. This is a problem for `std::optional`. There is a workaround class, `Bomba::Optional`, that inherits from `std::optional` and has no practical difference from it (WARNING: a bug prevents it from working in release).
 
 ### Remote Procedure Call
 You can define an RPC function by declaring this:
@@ -339,6 +339,7 @@ The `JsonRpcServer` class also accepts all the `getResponder` classes from earli
 #include "bomba_tcp_server.hpp"
 #include "bomba_rpc_object.hpp"
 #include "bomba_json_rpc.hpp"
+#include "bomba_download_server.hpp"
 
 struct Summer : Bomba::RpcObject<Summer> {
 	Bomba::RpcMember<[] (int first = Bomba::name("first"), int second = Bomba::name("second")) {
@@ -354,7 +355,7 @@ Bomba::BackgroundTcpServer<decltype(jsonRpcServer)> server = {jsonRpcServer, 808
 server.run();
 ```
 
-This again will dynamically allocate if the response is larger than 1 kiB, [here](#changing-buffer-size)'s how to change it. This does not apply to downloaded files from `CachingFileServer`, their size is known when writing the response header and there is no need to keep the entire response in memory.
+This again will dynamically allocate if the response is larger than 1 kiB, [here](#changing-buffer-size)'s how to change it. This does not apply to downloaded files from `CachingFileServer`, their size is known when writing the response header and there is no need to keep the entire response in memory. You can use `DynamicFileServer` instead if you want the files to be always read from disk (useful when editing the page).
 
 #### A JSON-RPC server that can provide its documentation and web content
 The JSON-RPC protocol does not specify a format for describing the API, so a similar protocol's documentation can be generated to describe the API in good detail.
@@ -364,7 +365,7 @@ The JSON-RPC protocol does not specify a format for describing the API, so a sim
 #include "bomba_http.hpp"
 #include "bomba_rpc_object.hpp"
 #include "bomba_json_rpc.hpp"
-#include "bomba_caching_file_server.hpp"
+#include "bomba_download_server.hpp"
 #include "bomba_json_wsp_description.hpp"
 
 struct RpcClass : Bomba::RpcObject<RpcClass> {
@@ -416,7 +417,7 @@ The binary format is relatively simple, somewhat similar to reinterpret casting 
 * Array is prefixed with size (same type as string), then contains the given number of classes
 * Key-value map is prefixed with size (same type as string) and contains pairs of string keys and values
 * Objects (corresponding to C++ classes) are sequences of values, without keys
-* Optional types and pointers are not supported (yet)
+* Optional types and pointers (that can be null) are preceded by a byte indicating if the value exists and follows or doesn't exist doesn't followop
 
 ### Clients
 Implementing a better client than `Bomba::SyncNetworkClient` might allow more functionality, but it should be good enough for many use cases.

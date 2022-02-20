@@ -32,7 +32,7 @@ class TcpServerBuffer : TcpReceiver {
 	constexpr static int ResponseBufferSize = ResponseMaxSize * 1.5;
 	std::array<char, ResponseBufferSize> _responseArray = {};
 	std::span<char> _responseBuffer = std::span<char>(_responseArray.data(), ResponseMaxSize);
-	int _keptStart = 0;
+	int _keptStart = 0; // FIXME: Can become extremely large under unknown circumstances
 	int _keptEnd = 0;
 	std::vector<char> _longLeftovers;
 
@@ -76,7 +76,7 @@ public:
 		int previousReadStart = _keptStart;
 		while ((reaction = readBuffer(session)) == ServerReaction::OK) {
 			session.notifyMessageWasParsed();
-			if (_keptStart == _keptEnd)
+			if (_keptStart >= _keptEnd)
 				break;
 		}
 		if (reaction == ServerReaction::DISCONNECT) {
@@ -169,15 +169,15 @@ class TcpServer {
 			_socket.async_receive(_space, [this] (std::error_code error, int length = 0) {
 				auto startTime = std::chrono::steady_clock::now();
 
-				bool expectíngMore = _buffer.receive(*this, error, length);
+				bool expectingMore = _buffer.receive(*this, error, length);
 
-				if (expectíngMore) {
+				if (expectingMore) {
 					readSome();
 				}
 				auto endTime = std::chrono::steady_clock::now();
 				_parent._totalResponseTime += std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime);
 
-				if (!expectíngMore) {
+				if (!expectingMore) {
 					cancel();
 					return;
 				}

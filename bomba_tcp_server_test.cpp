@@ -6,7 +6,7 @@
 #include "bomba_object.hpp"
 #include "bomba_rpc_object.hpp"
 #include "bomba_json_rpc.hpp"
-#include "bomba_caching_file_server.hpp"
+#include "bomba_download_server.hpp"
 #include "bomba_json_wsp_description.hpp"
 
 struct RpcMessage : Bomba::Serialisable<RpcMessage> {
@@ -41,9 +41,20 @@ int main(int argc, char** argv) {
 	AdvancedRpcClass method;
 	std::string description = describeInJsonWsp<std::string>(method, "bomba_experiment.com", "Bomba test");
 
-	Bomba::CachingFileServer cachingFileServer("../public_html");
-	cachingFileServer.addGeneratedFile("api_description.json", description);
-	Bomba::JsonRpcServer jsonRpc(method, cachingFileServer);
+	std::unique_ptr<Bomba::FileServerBase> fileServer = [&] () -> std::unique_ptr<Bomba::FileServerBase> {
+		if (true || argc > 1 && std::string_view(argv[1]) == std::string_view("dynamic")) {
+			auto made = std::make_unique<Bomba::DynamicFileServer>("../public_html");
+			made->addGeneratedFile("api_description.json", true, [=] (Bomba::Callback<void(std::span<const char>)> writer) {
+				writer(std::span<const char>(description.begin(), description.end()));
+			});
+			return made;
+		} else {
+			auto made = std::make_unique<Bomba::CachingFileServer>("../public_html");
+			made->addGeneratedFile("api_description.json", description);
+			return made;
+		}
+	}();
+	Bomba::JsonRpcServer jsonRpc(method, *fileServer);
 	Bomba::TcpServer server(jsonRpc, 8080);
 	server.run();
 }

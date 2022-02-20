@@ -430,7 +430,7 @@ public:
 		return *this;
 	}
 
-	GeneralisedBuffer& operator+=(std::string_view added) {
+	GeneralisedBuffer& operator+=(std::span<const char> added) {
 		int position = 0;
 		while (position < int(added.size())) {
 			int toCopy = std::min<int>(added.size() - position, remainingSpace());
@@ -443,6 +443,14 @@ public:
 			position += toCopy;
 		}
 		return *this;
+	}
+
+	GeneralisedBuffer& operator+=(std::string_view added) {
+		return operator+=(std::span<const char>(added.begin(), added.end()));
+	}
+
+	GeneralisedBuffer& operator+=(const char* added) {
+		return operator+=(std::span<const char>(added, strlen(added)));
 	}
 
 	int size() {
@@ -1184,6 +1192,10 @@ template <SerialisableOptionalOrSmartPointer Ptr>
 struct TypedSerialiser<Ptr> {
 	using ValueType = std::decay_t<decltype(*std::declval<Ptr>())>;
 	static void serialiseMember(IStructuredOutput& out, const Ptr& value, SerialisationFlags::Flags flags) {
+		std::cout << "Present? " << bool(value) << std::endl;
+		if (value) {
+			std::cout << "Value: " << *value << std::endl;
+		}
 		out.writeOptional(flags, bool(value), [&] { TypedSerialiser<ValueType>::serialiseMember(out, *value, flags); });
 	}
 

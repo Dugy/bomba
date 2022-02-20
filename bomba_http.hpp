@@ -771,11 +771,9 @@ public:
 				}
 				if (success) {
 					if (correctResponseWriter.startedResponse) {
-						restore();
 					} else {
 						constexpr std::string_view noResponse = "HTTP/1.1 204 No Content\r\n\r\n";
 						writer(std::span<const char>(noResponse.begin(), noResponse.size()));
-						restore();
 					}
 				}
 			} else {
@@ -784,8 +782,8 @@ public:
 									"Content-Length: 77\r\n\r\n"
 									"<!doctype html><html lang=en><title>Error 501: Method not implemented</title>";
 				writer(std::span<const char>(errorMessage.begin(), errorMessage.size()));
-				restore();
 			}
+			restore();
 			return {_state.ending, consuming};
 		}
 		
