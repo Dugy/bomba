@@ -317,7 +317,19 @@ class Serialisable : public IDescribableSerialisable {
 				T value;
 				value = std::decay_t<decltype(*value)>(std::get<Enumeration>(_args)...);
 				return value;
-			} else return T(std::get<Enumeration>(_args)...);
+			} else if constexpr(SerialisableOptionalBase<T> && SerialisableOptionalOrSmartPointer<T>) {
+				if (_setupInstance) [[unlikely]] {
+					// Can't assure here that the instance part of std::optional won't be left uninitialised if started as blank
+					T value;
+					value = std::decay_t<decltype(*value)>();
+					value = T(std::get<Enumeration>(_args)...);
+					return value;
+				} else {
+					return T(std::get<Enumeration>(_args)...);
+				}
+			} else {
+				return T(std::get<Enumeration>(_args)...);
+			}
 		}
 	public:
 #if _MSC_VER && !__INTEL_COMPILER

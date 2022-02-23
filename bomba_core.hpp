@@ -1140,10 +1140,10 @@ struct TypedSerialiser<Map> {
 
 template <typename T>
 struct Optional : public std::optional<T>  {
-	Optional() : std::optional<T>() {}
-	Optional(std::nullopt_t) : std::optional<T>(std::nullopt) {}
-	Optional(const Optional<T>&) = default;
-	Optional(Optional<T>&&) = default;
+	Optional() : std::optional<T>() { }
+	Optional(std::nullopt_t) : std::optional<T>(std::nullopt) { }
+	Optional(const Optional<T>& from) = default;
+	Optional(Optional<T>&& from) = default;
 	Optional<T>& operator=(const T& value) { std::optional<T>::operator=(value); return *this; }
 	Optional<T>& operator=(T&& value) { std::optional<T>::operator=(value); return *this; }
 	Optional<T>& operator=(const std::optional<T>& value) { std::optional<T>::operator=(value); return *this; }
@@ -1192,10 +1192,6 @@ template <SerialisableOptionalOrSmartPointer Ptr>
 struct TypedSerialiser<Ptr> {
 	using ValueType = std::decay_t<decltype(*std::declval<Ptr>())>;
 	static void serialiseMember(IStructuredOutput& out, const Ptr& value, SerialisationFlags::Flags flags) {
-		std::cout << "Present? " << bool(value) << std::endl;
-		if (value) {
-			std::cout << "Value: " << *value << std::endl;
-		}
 		out.writeOptional(flags, bool(value), [&] { TypedSerialiser<ValueType>::serialiseMember(out, *value, flags); });
 	}
 

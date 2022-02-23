@@ -99,7 +99,7 @@ The first template argument sets the data format. `BasicJson<>` makes it JSON. `
 
 To use different internal type than `std::string` for unescaping strings, set it as a second template argument. More on this is [here](#custom-string-type). To append the result of `serialise()` to an existing string, use its overload that accepts a reference to the output as argument. The output type is set by the second template argument, which defaults to the type of the first argument.
 
-For implementation reasons, classes with implicit conversion constructors cannot be used as a serialisable class argument this way. This is a problem for `std::optional`. There is a workaround class, `Bomba::Optional`, that inherits from `std::optional` and has no practical difference from it (WARNING: a bug prevents it from working in release).
+For implementation reasons, classes with implicit conversion constructors cannot be used as a serialisable class argument this way. This is a problem for `std::optional`. There is a workaround class, `Bomba::Optional`, that inherits from `std::optional` and has no practical difference from it.
 
 ### Remote Procedure Call
 You can define an RPC function by declaring this:

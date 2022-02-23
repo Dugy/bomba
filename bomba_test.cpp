@@ -616,6 +616,7 @@ int main(int argc, char** argv) {
 		tested.subIndex = makeOptional<short int>(15);
 		tested.contents = "Not much at this point";
 		std::string written = tested.serialise<StringJSON>();
+		std::cout << "Object is at " << &tested << " and the optional at " << &tested.subIndex << std::endl;
 		doATest(written, standardObjectJson);
 
 		std::cout << "Testing Serialisable class read" << std::endl;
