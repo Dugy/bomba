@@ -607,7 +607,7 @@ class HttpServer {
 	} _responders;
 
 	static inline DummyGetResponder dummyGetResponderInstance = {};
-	static inline DummyGetResponder dummyPostResponderInstance = {};
+	static inline DummyPostResponder dummyPostResponderInstance = {};
 public:
 	HttpServer(IHttpGetResponder& getResponder = dummyGetResponderInstance, IHttpPostResponder& postResponder = dummyPostResponderInstance)
 			: _responders({getResponder, postResponder}) {}
@@ -680,8 +680,11 @@ public:
 				}
 			}
 
-			if (_state.requestType != ParseState::POST_REQUEST)
-				_state.bodySize = 0;
+			if (_state.requestType == ParseState::POST_REQUEST) {
+				if (_state.bodySize == -1) {
+					return { ServerReaction::DISCONNECT, 0}; // The size was not in the header
+				}
+			} else _state.bodySize = 0;
 			int consuming = _state.parsePosition + _state.bodySize;
 			
 			// All body has beed read
@@ -895,14 +898,17 @@ public:
 	}
 
 	void getResponse(RequestToken token, Callback<bool(std::span<char> message, bool success)> reader) {
-		bool obtained = false;
-		while (!obtained) {
+		bool done = false;
+		while (!done) {
 			ParseState state;
 			_client.getResponse(token, [&, this] (std::span<char> input, bool identified)
 						-> std::tuple<ServerReaction, RequestToken, int64_t> {
 				// Locate the header's span
 				if (state.bodySize == -1) {
 					auto [reaction, position] = state.parse(input);
+					if (reaction == ServerReaction::DISCONNECT) {
+						done = true;
+					}
 					if (reaction != ServerReaction::OK) {
 						return {reaction, RequestToken{}, position};
 					}
@@ -918,7 +924,7 @@ public:
 					_lastTokenRead.id++;
 					return {ServerReaction::WRONG_REPLY, _lastTokenRead, offset};
 				}					
-				obtained = true;
+				done = true;
 
 				reader(std::span<char>(input.begin() + state.parsePosition, input.begin() + state.parsePosition + state.bodySize),
 						(state.resultCode >= 200 && state.resultCode < 300));

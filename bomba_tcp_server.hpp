@@ -1,5 +1,5 @@
-#ifndef BOMBA_SYNC_SERVER_HPP
-#define BOMBA_SYNC_SERVER_HPP
+#ifndef BOMBA_TCP_SERVER_HPP
+#define BOMBA_TCP_SERVER_HPP
 
 #ifndef BOMBA_CORE // Needed to run in godbolt
 #include "bomba_core.hpp"
@@ -287,4 +287,4 @@ public:
 
 } // namespace Bomba
 
-#endif // BOMBA_SYNC_SERVER_HPP
+#endif // BOMBA_TCP_SERVER_HPP

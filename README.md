@@ -423,7 +423,7 @@ The binary format is relatively simple, somewhat similar to reinterpret casting 
 Implementing a better client than `Bomba::SyncNetworkClient` might allow more functionality, but it should be good enough for many use cases.
 
 #### Downloading a resource through HTTP
-This will download and print the index page of anything served at `0.0.0.0:8080`. This is not the intended usage
+This will download and print the index page of anything served at `0.0.0.0:8080`. This is not the intended usage.
 ```C++
 #include "bomba_sync_client.hpp"
 #include "bomba_http.hpp"
@@ -439,6 +439,28 @@ http.getResponse(identifier, [](std::span<char> response) {
 	return true;
 });
 ```
+
+
+#### Using HTTPS
+This requires having boost::asio and openssl installed. I couldn't get the server to work.
+```C++
+#include "tls/tls_sync_client.hpp"
+#include "bomba_http.hpp"
+
+int main(int, char**) {
+	constexpr std::string_view target = "duckduckgo.com";
+	Bomba::TlsSyncClient client(target);
+	Bomba::HttpClient http(client, target);
+
+	auto response = http.get();
+	http.getResponse(response, [&] (std::span<char> response, bool) {
+		std::cout << std::string_view(response.data(), response.size()) << std::endl;
+		return true;
+	});
+}
+
+```
+Swapping `SyncNetworkClient` for `TlsSyncClient` in other examples will switch from HTTP to HTTPS.
 
 #### Calling an RPC method through HTTP
 This will call a HTTP method of a [server](#post-only-server).

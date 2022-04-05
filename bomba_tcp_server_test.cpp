@@ -38,23 +38,27 @@ struct AdvancedRpcClass : Bomba::RpcObject<AdvancedRpcClass> {
 
 int main(int argc, char** argv) {
 
-	AdvancedRpcClass method;
-	std::string description = describeInJsonWsp<std::string>(method, "bomba_experiment.com", "Bomba test");
+//	AdvancedRpcClass method;
+//	std::string description = describeInJsonWsp<std::string>(method, "bomba_experiment.com", "Bomba test");
 
-	std::unique_ptr<Bomba::FileServerBase> fileServer = [&] () -> std::unique_ptr<Bomba::FileServerBase> {
-		if (true || argc > 1 && std::string_view(argv[1]) == std::string_view("dynamic")) {
-			auto made = std::make_unique<Bomba::DynamicFileServer>("../public_html");
-			made->addGeneratedFile("api_description.json", true, [=] (Bomba::Callback<void(std::span<const char>)> writer) {
-				writer(std::span<const char>(description.begin(), description.end()));
-			});
-			return made;
-		} else {
-			auto made = std::make_unique<Bomba::CachingFileServer>("../public_html");
-			made->addGeneratedFile("api_description.json", description);
-			return made;
-		}
-	}();
-	Bomba::JsonRpcServer jsonRpc(method, *fileServer);
-	Bomba::TcpServer server(jsonRpc, 8080);
+//	std::unique_ptr<Bomba::FileServerBase> fileServer = [&] () -> std::unique_ptr<Bomba::FileServerBase> {
+//		if (true || argc > 1 && std::string_view(argv[1]) == std::string_view("dynamic")) {
+//			auto made = std::make_unique<Bomba::DynamicFileServer>("../public_html");
+//			made->addGeneratedFile("api_description.json", true, [=] (Bomba::Callback<void(std::span<const char>)> writer) {
+//				writer(std::span<const char>(description.begin(), description.end()));
+//			});
+//			return made;
+//		} else {
+//			auto made = std::make_unique<Bomba::CachingFileServer>("../public_html");
+//			made->addGeneratedFile("api_description.json", description);
+//			return made;
+//		}
+//	}();
+//	Bomba::JsonRpcServer jsonRpc(method, *fileServer);
+//	Bomba::TcpServer server(jsonRpc, 8080);
+	Bomba::CachingFileServer cachingFileServer("public_html");
+	Bomba::DummyPostResponder postResponder;
+	Bomba::HttpServer http(cachingFileServer, postResponder);
+	Bomba::TcpServer server(http, 8080);
 	server.run();
 }
